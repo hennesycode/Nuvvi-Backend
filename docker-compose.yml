@@ -1,0 +1,65 @@
+version: "3.9"
+
+services:
+  backend:
+    build: .
+    container_name: nuvvi-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - nuvvi-network
+
+  db:
+    image: postgres:16-alpine
+    container_name: nuvvi-db
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nuvvi_db}
+      POSTGRES_USER: ${POSTGRES_USER:-nuvvi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nuvvi_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nuvvi} -d ${POSTGRES_DB:-nuvvi_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - nuvvi-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: nuvvi-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - nuvvi-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  static_volume:
+  media_volume:
+
+networks:
+  nuvvi-network:
+    driver: bridge
