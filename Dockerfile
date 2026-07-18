@@ -8,7 +8,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libpq-dev curl \
+    build-essential default-libmysqlclient-dev libpq-dev pkg-config curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

@@ -1,0 +1,62 @@
+services:
+  backend:
+    build: .
+    container_name: nuvvi-backend-local
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8003:8000"
+    volumes:
+      - .:/app
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - nuvvi-network
+
+  mysql:
+    image: mysql:8.4
+    container_name: nuvvi-mysql-local
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-nuvvi_db}
+      MYSQL_USER: ${MYSQL_USER:-nuvvi}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-nuvvi_password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-nuvvi_root_password}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - nuvvi-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: nuvvi-redis-local
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - nuvvi-network
+
+volumes:
+  mysql_data:
+  redis_data:
+  static_volume:
+  media_volume:
+
+networks:
+  nuvvi-network:
+    driver: bridge

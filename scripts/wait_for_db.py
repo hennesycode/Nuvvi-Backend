@@ -1,17 +1,22 @@
 #!/usr/bin/env python
-import time
 import os
-import psycopg
+import sys
+import time
+from pathlib import Path
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://nuvvi:nuvvi_password@db:5432/nuvvi_db")
+import django
+from django.db import connections
 
 MAX_RETRIES = 30
 RETRY_DELAY = 2
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.development")
+django.setup()
+
 for attempt in range(1, MAX_RETRIES + 1):
     try:
-        conn = psycopg.connect(DATABASE_URL, connect_timeout=5)
-        conn.close()
+        connections["default"].ensure_connection()
         print(f"Database is ready! (attempt {attempt})")
         break
     except Exception as e:

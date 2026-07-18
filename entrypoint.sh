@@ -3,7 +3,7 @@ set -e
 
 echo "==> Nuvvi Backend Entrypoint <=="
 
-echo "==> Waiting for PostgreSQL..."
+echo "==> Waiting for database..."
 python scripts/wait_for_db.py
 
 echo "==> Running migrations..."
