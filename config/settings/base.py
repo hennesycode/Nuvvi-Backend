@@ -85,9 +85,6 @@ CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
         "LOCATION": REDIS_URL,
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-        },
     }
 }
 
@@ -102,6 +99,12 @@ CELERY_TASK_ALWAYS_EAGER = True  # Default to eager until real tasks exist
 
 # Custom User model
 AUTH_USER_MODEL = "accounts.User"
+
+# Authentication backends
+AUTHENTICATION_BACKENDS = [
+    "apps.accounts.backends.EmailOrUsernameBackend",
+    "django.contrib.auth.backends.ModelBackend",
+]
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
@@ -177,6 +180,27 @@ CSRF_TRUSTED_ORIGINS = env.list(
 )
 CORS_ALLOW_CREDENTIALS = True
 
+# Security headers
+SECURE_BROWSER_XSS_FILTER = True
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = "DENY"
+SECURE_HSTS_SECONDS = 31536000 if ENVIRONMENT == "production" else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = ENVIRONMENT == "production"
+SECURE_HSTS_PRELOAD = ENVIRONMENT == "production"
+
+# Session security
+SESSION_COOKIE_SECURE = ENVIRONMENT == "production"
+CSRF_COOKIE_SECURE = ENVIRONMENT == "production"
+SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_SAMESITE = "Lax"
+
+# django-axes alternative: manual rate limiting via Redis (see apps/accounts/rate_limiter.py)
+LOGIN_RATE_LIMIT = 5  # max attempts per window
+LOGIN_RATE_WINDOW = 900  # seconds (15 min)
+LOGIN_LOCKOUT = 1800  # seconds (30 min)
+
 # drf-spectacular
 SPECTACULAR_SETTINGS = {
     "TITLE": "Nuvvi API",
@@ -189,6 +213,8 @@ SPECTACULAR_SETTINGS = {
 DEFAULT_SUPERUSER_EMAIL = env("DEFAULT_SUPERUSER_EMAIL", default="admin@nuvvi.local")
 DEFAULT_SUPERUSER_PASSWORD = env("DEFAULT_SUPERUSER_PASSWORD", default="Admin12345*")
 DEFAULT_SUPERUSER_NAME = env("DEFAULT_SUPERUSER_NAME", default="Super Admin Nuvvi")
+FRONTEND_BASE_URL = env("FRONTEND_BASE_URL", default="http://localhost:5174")
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="Nuvvi <no-reply@nuvvi.local>")
 
 # MATIAS API (placeholder)
 MATIAS_API_BASE_URL = env("MATIAS_API_BASE_URL", default="")
