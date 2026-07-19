@@ -49,3 +49,80 @@ class DianDocumentLog(models.Model):
 
     def __str__(self):
         return f"{self.document_type} — {self.external_id} ({self.status})"
+
+
+class MatiasConnection(models.Model):
+    ENVIRONMENT_SANDBOX = "sandbox"
+    ENVIRONMENT_PRODUCTION = "production"
+    ENVIRONMENT_CHOICES = [
+        (ENVIRONMENT_SANDBOX, "Sandbox"),
+        (ENVIRONMENT_PRODUCTION, "Producción"),
+    ]
+
+    STATUS_CONNECTED = "CONNECTED"
+    STATUS_DISCONNECTED = "DISCONNECTED"
+    STATUS_AUTHENTICATION_ERROR = "AUTHENTICATION_ERROR"
+    STATUS_API_UNAVAILABLE = "API_UNAVAILABLE"
+    STATUS_CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
+
+    OP_READY = "READY_TO_REGISTER_COMPANIES"
+    OP_PARENT_NOT_FOUND = "PARENT_COMPANY_NOT_FOUND"
+    OP_MULTICOMPANY_DENIED = "MULTICOMPANY_PERMISSION_DENIED"
+    OP_TOKEN_EXPIRED = "TOKEN_EXPIRED"
+    OP_CATALOGS_NOT_SYNCED = "CATALOGS_NOT_SYNCHRONIZED"
+
+    CATALOGS_PENDING = "pending"
+    CATALOGS_SYNCED = "synced"
+    CATALOGS_ERROR = "error"
+
+    name = models.CharField(max_length=120, default="MATIAS API")
+    environment = models.CharField(max_length=20, choices=ENVIRONMENT_CHOICES, default=ENVIRONMENT_SANDBOX)
+    base_url = models.URLField(max_length=255, default="https://sandbox-api.matias-api.com/api/ubl2.1")
+    enabled = models.BooleanField(default=False)
+    timeout_seconds = models.PositiveSmallIntegerField(default=20)
+    retry_attempts = models.PositiveSmallIntegerField(default=2)
+
+    auth_method = models.CharField(max_length=20, default="PAT")
+    encrypted_access_token = models.TextField(blank=True)
+    token_external_id = models.CharField(max_length=120, blank=True)
+    token_name = models.CharField(max_length=120, blank=True)
+    token_expires_at = models.DateTimeField(null=True, blank=True)
+    account_email = models.EmailField(blank=True)
+
+    parent_company_uuid = models.CharField(max_length=120, blank=True)
+    external_company_id = models.CharField(max_length=120, blank=True)
+    external_company_name = models.CharField(max_length=255, blank=True)
+    external_company_nit = models.CharField(max_length=50, blank=True)
+    account_main_email = models.EmailField(blank=True)
+    linked_companies_count = models.PositiveIntegerField(default=0)
+
+    connection_status = models.CharField(max_length=40, default=STATUS_DISCONNECTED)
+    operational_status = models.CharField(max_length=50, default=OP_CATALOGS_NOT_SYNCED)
+    environment_detected = models.CharField(max_length=30, blank=True)
+    multicompany_verified = models.BooleanField(default=False)
+
+    last_test_at = models.DateTimeField(null=True, blank=True)
+    last_success_at = models.DateTimeField(null=True, blank=True)
+    last_error_at = models.DateTimeField(null=True, blank=True)
+    last_error_code = models.CharField(max_length=50, blank=True)
+    last_error_message = models.TextField(blank=True)
+    last_response_time_ms = models.PositiveIntegerField(null=True, blank=True)
+    last_test_results = models.JSONField(default=list, blank=True)
+
+    catalogs_status = models.CharField(max_length=20, default=CATALOGS_PENDING)
+    catalogs_synced_count = models.PositiveSmallIntegerField(default=0)
+    catalogs_total_count = models.PositiveSmallIntegerField(default=17)
+    catalogs_last_synced_at = models.DateTimeField(null=True, blank=True)
+    catalogs_detail = models.JSONField(default=list, blank=True)
+
+    created_by = models.ForeignKey("accounts.User", on_delete=models.SET_NULL, related_name="matias_connections_created", null=True, blank=True)
+    updated_by = models.ForeignKey("accounts.User", on_delete=models.SET_NULL, related_name="matias_connections_updated", null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "matias_connections"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.name} ({self.environment})"

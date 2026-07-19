@@ -13,3 +13,4 @@ whitenoise>=6.8
 redis>=5.2
 django-redis>=5.4
 celery>=5.4
+cryptography>=42.0

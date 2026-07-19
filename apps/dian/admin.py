@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import DianEnvironment, IssuerCompany, DianDocumentLog
+from .models import DianEnvironment, IssuerCompany, DianDocumentLog, MatiasConnection
 
 
 @admin.register(DianEnvironment)
@@ -22,3 +22,11 @@ class DianDocumentLogAdmin(admin.ModelAdmin):
     list_filter = ("status", "document_type")
     search_fields = ("external_id", "tenant__name")
     readonly_fields = ("created_at",)
+
+
+@admin.register(MatiasConnection)
+class MatiasConnectionAdmin(admin.ModelAdmin):
+    list_display = ("name", "environment", "enabled", "connection_status", "operational_status", "updated_at")
+    list_filter = ("environment", "enabled", "connection_status", "operational_status")
+    search_fields = ("name", "account_email", "external_company_name", "external_company_nit")
+    readonly_fields = ("encrypted_access_token", "created_at", "updated_at")

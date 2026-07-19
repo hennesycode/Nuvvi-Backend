@@ -11,6 +11,7 @@ env = environ.Env()
 environ.Env.read_env(BASE_DIR / ".env")
 
 SECRET_KEY = env("DJANGO_SECRET_KEY", default="change-me-insecure-default-key")
+MATIAS_ENCRYPTION_KEY = env("MATIAS_ENCRYPTION_KEY", default="")
 DEBUG = env.bool("DJANGO_DEBUG", default=False)
 ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
 ENVIRONMENT = env("ENVIRONMENT", default="development")
