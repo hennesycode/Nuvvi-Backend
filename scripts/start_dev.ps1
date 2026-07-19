@@ -16,8 +16,12 @@ pip install -r requirements.txt
 Write-Host "Running migrations..." -ForegroundColor Yellow
 python manage.py migrate
 
-Write-Host "Creating default superuser..." -ForegroundColor Yellow
-python scripts/create_default_superuser.py
+if ($env:CREATE_DEFAULT_SUPERUSER -eq "true") {
+    Write-Host "Creating default superuser..." -ForegroundColor Yellow
+    python scripts/create_default_superuser.py
+} else {
+    Write-Host "Skipping default superuser creation" -ForegroundColor Yellow
+}
 
 Write-Host "Starting development server..." -ForegroundColor Green
 python manage.py runserver 0.0.0.0:8000

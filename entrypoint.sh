@@ -12,8 +12,12 @@ python manage.py migrate --noinput
 echo "==> Collecting static files..."
 python manage.py collectstatic --noinput
 
-echo "==> Creating default superuser if needed..."
-python scripts/create_default_superuser.py
+if [ "$CREATE_DEFAULT_SUPERUSER" = "true" ]; then
+    echo "==> Creating default superuser if needed..."
+    python scripts/create_default_superuser.py
+else
+    echo "==> Skipping default superuser creation"
+fi
 
 echo "==> Starting application..."
 
