@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.contrib.auth.password_validation import validate_password
 from .models import User
 
 
@@ -99,6 +100,74 @@ class PasswordSetupSerializer(serializers.Serializer):
     def validate(self, attrs):
         if attrs["password"] != attrs["password_confirm"]:
             raise serializers.ValidationError({"password_confirm": "Las contraseñas no coinciden."})
+        return attrs
+
+
+class ProfileUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = [
+            "first_name", "last_name", "identification_type", "identification_number", "email",
+            "country", "department", "city", "address", "phone_country_code", "phone_number",
+        ]
+
+    def validate_email(self, value):
+        email = User.objects.normalize_email(value)
+        queryset = User.objects.filter(email__iexact=email)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise serializers.ValidationError("Este correo ya está registrado.")
+        return email
+
+    def validate(self, attrs):
+        data = {**getattr(self.instance, "__dict__", {}), **attrs}
+        required_fields = [
+            "first_name", "last_name", "identification_type", "identification_number",
+            "email", "department", "city", "address", "phone_number",
+        ]
+        missing = [field for field in required_fields if not str(data.get(field, "")).strip()]
+        if missing:
+            raise serializers.ValidationError({field: "Este campo es obligatorio." for field in missing})
+
+        if data.get("identification_type") not in dict(User.IDENTIFICATION_TYPE_CHOICES):
+            raise serializers.ValidationError({"identification_type": "Selecciona un tipo de identificación válido."})
+
+        identification_number = str(data.get("identification_number", "")).strip()
+        phone_number = str(data.get("phone_number", "")).strip()
+        if not identification_number.isdigit():
+            raise serializers.ValidationError({"identification_number": "El documento debe contener solo números."})
+        if not phone_number.isdigit() or len(phone_number) != 10:
+            raise serializers.ValidationError({"phone_number": "El celular debe tener exactamente 10 números."})
+        if data.get("country") and data.get("country") != "Colombia":
+            raise serializers.ValidationError({"country": "Por ahora solo se permite Colombia."})
+        return attrs
+
+    def update(self, instance, validated_data):
+        for key, value in validated_data.items():
+            setattr(instance, key, value)
+        instance.full_name = f"{instance.first_name.strip()} {instance.last_name.strip()}".strip()
+        instance.country = "Colombia"
+        instance.phone_country_code = "+57"
+        instance.save()
+        return instance
+
+
+class PasswordChangeSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True)
+    password = serializers.CharField(write_only=True, min_length=8)
+    password_confirm = serializers.CharField(write_only=True, min_length=8)
+
+    def validate_current_password(self, value):
+        user = self.context["request"].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("La contraseña actual no es correcta.")
+        return value
+
+    def validate(self, attrs):
+        if attrs["password"] != attrs["password_confirm"]:
+            raise serializers.ValidationError({"password_confirm": "Las contraseñas no coinciden."})
+        validate_password(attrs["password"], self.context["request"].user)
         return attrs
 
 
