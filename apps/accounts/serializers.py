@@ -3,13 +3,34 @@ from django.contrib.auth.password_validation import validate_password
 from .models import User
 
 
+def validate_unique_user_field(instance, field: str, value: str, message: str):
+    if not value:
+        return value
+    lookup = {f"{field}__iexact": value}
+    queryset = User.objects.filter(**lookup)
+    if instance:
+        queryset = queryset.exclude(pk=instance.pk)
+    if queryset.exists():
+        raise serializers.ValidationError(message)
+    return value
+
+
+def normalize_username(value: str) -> str:
+    username = (value or "").strip().lower()
+    if len(username) < 3:
+        raise serializers.ValidationError("El nombre de usuario debe tener mínimo 3 caracteres.")
+    if not all(char.isalnum() or char in "._-" for char in username):
+        raise serializers.ValidationError("Usa solo letras, números, punto, guion o guion bajo.")
+    return username
+
+
 class UserSerializer(serializers.ModelSerializer):
     admin_role_label = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
-            "id", "email", "full_name", "first_name", "last_name", "admin_role", "admin_role_label",
+            "id", "email", "username", "full_name", "first_name", "last_name", "admin_role", "admin_role_label",
             "identification_type", "identification_number", "country", "department", "city", "address",
             "phone_country_code", "phone_number", "last_login", "invitation_sent_at", "is_active",
             "is_staff", "is_superuser", "created_at", "updated_at",
@@ -30,7 +51,7 @@ class AdminUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            "id", "first_name", "last_name", "full_name", "admin_role", "admin_role_label", "identification_type",
+            "id", "first_name", "last_name", "full_name", "username", "admin_role", "admin_role_label", "identification_type",
             "identification_number", "email", "country", "department", "city", "address",
             "phone_country_code", "phone_number", "is_active", "is_superuser", "is_staff",
             "last_login", "invitation_sent_at", "created_at", "updated_at",
@@ -47,7 +68,7 @@ class AdminUserSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         data = {**getattr(self.instance, "__dict__", {}), **attrs}
         required_fields = [
-            "first_name", "last_name", "admin_role", "identification_type", "identification_number",
+            "first_name", "last_name", "username", "admin_role", "identification_type", "identification_number",
             "email", "department", "city", "address", "phone_number",
         ]
         missing = [field for field in required_fields if not str(data.get(field, "")).strip()]
@@ -59,10 +80,20 @@ class AdminUserSerializer(serializers.ModelSerializer):
         if attrs.get("identification_type") not in dict(User.IDENTIFICATION_TYPE_CHOICES):
             raise serializers.ValidationError({"identification_type": "Selecciona un tipo de identificación válido."})
 
+        username = normalize_username(str(data.get("username", "")))
+        validate_unique_user_field(self.instance, "username", username, "Este nombre de usuario ya está registrado.")
+        attrs["username"] = username
+
+        email = User.objects.normalize_email(str(data.get("email", "")).strip())
+        validate_unique_user_field(self.instance, "email", email, "Este correo ya está registrado.")
+        attrs["email"] = email
+
         identification_number = str(data.get("identification_number", "")).strip()
         phone_number = str(data.get("phone_number", "")).strip()
         if not identification_number.isdigit():
             raise serializers.ValidationError({"identification_number": "El documento debe contener solo números."})
+        validate_unique_user_field(self.instance, "identification_number", identification_number, "Este número de identificación ya está registrado.")
+        attrs["identification_number"] = identification_number
         if not phone_number.isdigit() or len(phone_number) != 10:
             raise serializers.ValidationError({"phone_number": "El celular debe tener exactamente 10 números."})
         if data.get("country") and data.get("country") != "Colombia":
@@ -70,7 +101,6 @@ class AdminUserSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        validated_data["email"] = User.objects.normalize_email(validated_data["email"])
         validated_data["full_name"] = f"{validated_data['first_name'].strip()} {validated_data['last_name'].strip()}".strip()
         validated_data["country"] = "Colombia"
         validated_data["phone_country_code"] = "+57"
@@ -107,23 +137,28 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            "first_name", "last_name", "identification_type", "identification_number", "email",
+            "first_name", "last_name", "username", "identification_type", "identification_number", "email",
             "country", "department", "city", "address", "phone_country_code", "phone_number",
         ]
 
     def validate_email(self, value):
         email = User.objects.normalize_email(value)
-        queryset = User.objects.filter(email__iexact=email)
-        if self.instance:
-            queryset = queryset.exclude(pk=self.instance.pk)
-        if queryset.exists():
-            raise serializers.ValidationError("Este correo ya está registrado.")
-        return email
+        return validate_unique_user_field(self.instance, "email", email, "Este correo ya está registrado.")
+
+    def validate_username(self, value):
+        username = normalize_username(value)
+        return validate_unique_user_field(self.instance, "username", username, "Este nombre de usuario ya está registrado.")
+
+    def validate_identification_number(self, value):
+        identification_number = str(value).strip()
+        if not identification_number.isdigit():
+            raise serializers.ValidationError("El documento debe contener solo números.")
+        return validate_unique_user_field(self.instance, "identification_number", identification_number, "Este número de identificación ya está registrado.")
 
     def validate(self, attrs):
         data = {**getattr(self.instance, "__dict__", {}), **attrs}
         required_fields = [
-            "first_name", "last_name", "identification_type", "identification_number",
+            "first_name", "last_name", "username", "identification_type", "identification_number",
             "email", "department", "city", "address", "phone_number",
         ]
         missing = [field for field in required_fields if not str(data.get(field, "")).strip()]
@@ -133,10 +168,7 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
         if data.get("identification_type") not in dict(User.IDENTIFICATION_TYPE_CHOICES):
             raise serializers.ValidationError({"identification_type": "Selecciona un tipo de identificación válido."})
 
-        identification_number = str(data.get("identification_number", "")).strip()
         phone_number = str(data.get("phone_number", "")).strip()
-        if not identification_number.isdigit():
-            raise serializers.ValidationError({"identification_number": "El documento debe contener solo números."})
         if not phone_number.isdigit() or len(phone_number) != 10:
             raise serializers.ValidationError({"phone_number": "El celular debe tener exactamente 10 números."})
         if data.get("country") and data.get("country") != "Colombia":

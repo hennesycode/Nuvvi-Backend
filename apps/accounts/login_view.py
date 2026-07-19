@@ -19,28 +19,28 @@ def _get_tokens_for_user(user: User) -> dict:
 
 
 class LoginView(APIView):
-    """Login seguro con rate limiting, respeta el backend EmailOrUsernameBackend."""
+    """Login seguro con rate limiting por correo, usuario o identificación."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
 
     def post(self, request):
-        email_or_username = (request.data.get("email") or "").strip()
+        credential = (request.data.get("email") or "").strip()
         password = request.data.get("password") or ""
         client_ip = self._get_client_ip(request)
 
-        if not email_or_username or not password:
+        if not credential or not password:
             return Response(
-                {"detail": "Email/usuario y contraseña son requeridos."},
+                {"detail": "Correo, usuario o identificación y contraseña son requeridos."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        limiter = LoginRateLimiter(request, email_or_username)
+        limiter = LoginRateLimiter(request, credential)
 
         if limiter.is_blocked():
             remaining = limiter.get_remaining_lockout()
             logger.warning(
-                f"SECURITY: Login blocked for '{email_or_username}' from {client_ip}. "
+                f"SECURITY: Login blocked for '{credential}' from {client_ip}. "
                 f"Lockout remaining: {remaining}s"
             )
             return Response(
@@ -54,11 +54,11 @@ class LoginView(APIView):
         limiter.increment()
 
         from django.contrib.auth import authenticate
-        user = authenticate(request, username=email_or_username, password=password)
+        user = authenticate(request, username=credential, password=password)
 
         if user is None or not user.is_active:
             logger.warning(
-                f"SECURITY: Failed login attempt for '{email_or_username}' from {client_ip}"
+                f"SECURITY: Failed login attempt for '{credential}' from {client_ip}"
             )
             return Response(
                 {"detail": "Usuario o contraseña incorrecto."},
