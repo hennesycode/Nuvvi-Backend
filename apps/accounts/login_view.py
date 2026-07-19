@@ -9,6 +9,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from .models import User
 from .rate_limiter import LoginRateLimiter
 from .serializers import UserSerializer
+from apps.audit.models import AuditLog
+from apps.audit.services import write_audit_log
 
 logger = logging.getLogger("django")
 
@@ -43,6 +45,14 @@ class LoginView(APIView):
                 f"SECURITY: Login blocked for '{credential}' from {client_ip}. "
                 f"Lockout remaining: {remaining}s"
             )
+            write_audit_log(
+                request=request,
+                action="login_bloqueado",
+                entity="auth",
+                status=AuditLog.STATUS_WARNING,
+                message="Inicio de sesión bloqueado por demasiados intentos.",
+                metadata={"credential": credential, "retry_after_seconds": remaining},
+            )
             return Response(
                 {
                     "detail": "Demasiados intentos. Intenta de nuevo más tarde.",
@@ -60,6 +70,15 @@ class LoginView(APIView):
             logger.warning(
                 f"SECURITY: Failed login attempt for '{credential}' from {client_ip}"
             )
+            write_audit_log(
+                request=request,
+                action="login_fallido",
+                entity="auth",
+                status=AuditLog.STATUS_ERROR,
+                message="Intento de inicio de sesión fallido.",
+                error_message="Usuario inactivo o credenciales incorrectas.",
+                metadata={"credential": credential},
+            )
             return Response(
                 {"detail": "Usuario o contraseña incorrecto."},
                 status=status.HTTP_401_UNAUTHORIZED,
@@ -74,6 +93,16 @@ class LoginView(APIView):
         logger.info(
             f"SECURITY: Successful login for '{user.email}' (id={user.id}, "
             f"is_staff={user.is_staff}, is_superuser={user.is_superuser}) from {client_ip}"
+        )
+        write_audit_log(
+            request=request,
+            actor=user,
+            action="login_exitoso",
+            entity="auth",
+            entity_id=user.id,
+            status=AuditLog.STATUS_SUCCESS,
+            message="Inicio de sesión exitoso.",
+            metadata={"credential": credential},
         )
 
         return Response(

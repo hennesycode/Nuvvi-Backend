@@ -17,6 +17,8 @@ from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, Bl
 
 from .models import User
 from .serializers import AdminUserSerializer, PasswordChangeSerializer, PasswordSetupSerializer, ProfileUpdateSerializer, UserSerializer
+from apps.audit.models import AuditLog
+from apps.audit.services import write_audit_log
 
 
 def _hash_token(token: str) -> str:
@@ -89,12 +91,30 @@ class ProfileView(APIView):
         serializer = ProfileUpdateSerializer(request.user, data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        write_audit_log(
+            request=request,
+            action="perfil_actualizado",
+            entity="accounts.User",
+            entity_id=user.id,
+            status=AuditLog.STATUS_SUCCESS,
+            message="Usuario actualizó su perfil personal.",
+            metadata={"email": user.email, "username": user.username},
+        )
         return Response(UserSerializer(user).data)
 
     def patch(self, request):
         serializer = ProfileUpdateSerializer(request.user, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        write_audit_log(
+            request=request,
+            action="perfil_actualizado",
+            entity="accounts.User",
+            entity_id=user.id,
+            status=AuditLog.STATUS_SUCCESS,
+            message="Usuario actualizó parcialmente su perfil personal.",
+            metadata={"email": user.email, "username": user.username},
+        )
         return Response(UserSerializer(user).data)
 
 
@@ -109,6 +129,15 @@ class PasswordChangeView(APIView):
 
         for token in OutstandingToken.objects.filter(user=request.user):
             BlacklistedToken.objects.get_or_create(token=token)
+
+        write_audit_log(
+            request=request,
+            action="contrasena_actualizada",
+            entity="accounts.User",
+            entity_id=request.user.id,
+            status=AuditLog.STATUS_SUCCESS,
+            message="Usuario cambió su contraseña y se invalidaron sus sesiones.",
+        )
 
         return Response({"detail": "Contraseña actualizada correctamente. Inicia sesión nuevamente."})
 
@@ -132,7 +161,42 @@ class AdminUserViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = serializer.save()
+        write_audit_log(
+            request=self.request,
+            action="usuario_creado",
+            entity="accounts.User",
+            entity_id=user.id,
+            status=AuditLog.STATUS_SUCCESS,
+            message="Usuario administrativo creado.",
+            metadata={"email": user.email, "username": user.username, "role": user.admin_role},
+        )
         self._issue_invitation(user)
+
+    def perform_update(self, serializer):
+        user = serializer.save()
+        write_audit_log(
+            request=self.request,
+            action="usuario_actualizado",
+            entity="accounts.User",
+            entity_id=user.id,
+            status=AuditLog.STATUS_SUCCESS,
+            message="Usuario administrativo actualizado.",
+            metadata={"email": user.email, "username": user.username, "role": user.admin_role},
+        )
+
+    def perform_destroy(self, instance):
+        metadata = {"email": instance.email, "username": instance.username, "identification_number": instance.identification_number}
+        entity_id = instance.id
+        instance.delete()
+        write_audit_log(
+            request=self.request,
+            action="usuario_eliminado",
+            entity="accounts.User",
+            entity_id=entity_id,
+            status=AuditLog.STATUS_SUCCESS,
+            message="Usuario administrativo eliminado.",
+            metadata=metadata,
+        )
 
     @action(detail=True, methods=["post"], url_path="resend-invitation")
     def resend_invitation(self, request, pk=None):
@@ -147,7 +211,29 @@ class AdminUserViewSet(viewsets.ModelViewSet):
         user.password_setup_used_at = None
         user.invitation_sent_at = timezone.now()
         user.save(update_fields=["password_setup_token_hash", "password_setup_expires_at", "password_setup_used_at", "invitation_sent_at", "updated_at"])
-        _send_admin_invitation(user, token)
+        try:
+            _send_admin_invitation(user, token)
+            write_audit_log(
+                request=self.request,
+                action="correo_invitacion_enviado",
+                entity="accounts.User",
+                entity_id=user.id,
+                status=AuditLog.STATUS_SUCCESS,
+                message="Correo de invitación enviado correctamente.",
+                metadata={"email": user.email, "username": user.username},
+            )
+        except Exception as exc:
+            write_audit_log(
+                request=self.request,
+                action="correo_invitacion_fallido",
+                entity="accounts.User",
+                entity_id=user.id,
+                status=AuditLog.STATUS_ERROR,
+                message="No se pudo enviar el correo de invitación.",
+                error_message=str(exc),
+                metadata={"email": user.email, "username": user.username},
+            )
+            raise
 
 
 class PasswordSetupView(APIView):
@@ -181,4 +267,13 @@ class PasswordSetupView(APIView):
         user.password_setup_token_hash = ""
         user.is_active = True
         user.save(update_fields=["password", "password_setup_used_at", "password_setup_token_hash", "is_active", "updated_at"])
+        write_audit_log(
+            request=request,
+            actor=user,
+            action="contrasena_invitacion_creada",
+            entity="accounts.User",
+            entity_id=user.id,
+            status=AuditLog.STATUS_SUCCESS,
+            message="Usuario creó contraseña desde enlace de invitación.",
+        )
         return Response({"detail": "Contraseña creada correctamente."})
