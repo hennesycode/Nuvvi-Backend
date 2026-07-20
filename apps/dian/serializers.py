@@ -1,7 +1,21 @@
+import re
+
 from rest_framework import serializers
 
 from .matias_service import get_default_token_endpoint, get_default_url, mask_token, normalize_base_url
 from .models import MatiasConnection
+
+
+TOKEN_NAME_PATTERN = re.compile(r"^[A-Za-z0-9 ._-]+$")
+
+
+def validate_matias_token_name(value):
+    name = " ".join(str(value or "").strip().split())
+    if not name:
+        raise serializers.ValidationError("El nombre del token es obligatorio.")
+    if not TOKEN_NAME_PATTERN.fullmatch(name):
+        raise serializers.ValidationError("El nombre del token solo puede contener letras sin tilde, números, espacios, guiones, guiones bajos y puntos.")
+    return name
 
 
 class MatiasConnectionSerializer(serializers.ModelSerializer):
@@ -69,6 +83,9 @@ class MatiasTokenSerializer(serializers.Serializer):
     token_name = serializers.CharField(required=False, allow_blank=True, max_length=120)
     account_email = serializers.EmailField(required=False, allow_blank=True)
 
+    def validate_token_name(self, value):
+        return validate_matias_token_name(value) if value else value
+
 
 class MatiasGeneratePatSerializer(serializers.Serializer):
     email = serializers.EmailField()
@@ -76,3 +93,6 @@ class MatiasGeneratePatSerializer(serializers.Serializer):
     token_name = serializers.CharField(max_length=120)
     description = serializers.CharField(required=False, allow_blank=True, max_length=255)
     expires_in_days = serializers.IntegerField(min_value=1, max_value=365, default=90)
+
+    def validate_token_name(self, value):
+        return validate_matias_token_name(value)

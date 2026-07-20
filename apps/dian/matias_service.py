@@ -519,6 +519,17 @@ def generate_pat(connection, *, email, password, token_name, description, expire
             raise ValueError("MATIAS devolvió una respuesta no JSON al crear el PAT.")
         if token_response["status_code"] != 201:
             message = token_response["data"].get("message") if isinstance(token_response["data"], dict) else ""
+            errors = token_response["data"].get("errors") if isinstance(token_response["data"], dict) else {}
+            name_error = errors.get("name") if isinstance(errors, dict) else None
+            if token_response["status_code"] in (400, 422) and ("name" in str(errors).lower() or "name" in str(message).lower()):
+                connection.connection_status = MatiasConnection.STATUS_CONNECTED
+                connection.operational_status = MatiasConnection.OP_PAT_VALIDATION_ERROR
+                connection.last_error_at = timezone.now()
+                connection.last_error_code = "INVALID_TOKEN_NAME"
+                connection.last_error_message = "El nombre del token solo puede contener letras sin tilde, números, espacios, guiones, guiones bajos y puntos."
+                connection.save(update_fields=["connection_status", "operational_status", "last_error_at", "last_error_code", "last_error_message"])
+                write_audit_log(request=request, action="matias_pat_generacion_fallida", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_ERROR, message="MATIAS rechazó el nombre del PAT.", error_message=connection.last_error_message, metadata={**metadata, "error_code": "INVALID_TOKEN_NAME", "external_message": message, "external_errors": {"name": name_error} if name_error else {}})
+                raise ValueError(connection.last_error_message)
             write_audit_log(request=request, action="matias_pat_generacion_fallida", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_ERROR, message="MATIAS no pudo crear el PAT.", error_message=message or f"HTTP {token_response['status_code']}", metadata={**metadata, "error_code": "PAT_CREATION_FAILED"})
             raise ValueError(message or "MATIAS no pudo crear el PAT.")
 
