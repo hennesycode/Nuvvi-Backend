@@ -63,12 +63,23 @@ class MatiasConnection(models.Model):
     STATUS_DISCONNECTED = "DISCONNECTED"
     STATUS_DISABLED = "DISABLED"
     STATUS_NOT_CONFIGURED = "NOT_CONFIGURED"
+    STATUS_TESTING = "TESTING"
     STATUS_AUTHENTICATION_ERROR = "AUTHENTICATION_ERROR"
     STATUS_API_UNAVAILABLE = "API_UNAVAILABLE"
+    STATUS_TIMEOUT = "TIMEOUT"
+    STATUS_ENVIRONMENT_MISMATCH = "ENVIRONMENT_MISMATCH"
     STATUS_CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
 
     OP_INACTIVE = "INACTIVE"
     OP_PAT_REQUIRED = "PAT_REQUIRED"
+    OP_PAT_VALID = "PAT_VALID"
+    OP_ACCOUNT_NOT_DETECTED = "ACCOUNT_NOT_DETECTED"
+    OP_PARENT_UUID_REQUIRED = "PARENT_UUID_REQUIRED"
+    OP_MULTICOMPANY_PENDING = "MULTICOMPANY_PENDING"
+    OP_MULTICOMPANY_VERIFIED = "MULTICOMPANY_VERIFIED"
+    OP_MEMBERSHIP_INACTIVE = "MEMBERSHIP_INACTIVE"
+    OP_CATALOGS_PENDING = "CATALOGS_PENDING"
+    OP_CATALOGS_PARTIAL = "CATALOGS_PARTIAL"
     OP_READY = "READY_TO_REGISTER_COMPANIES"
     OP_PARENT_NOT_FOUND = "PARENT_COMPANY_NOT_FOUND"
     OP_MULTICOMPANY_DENIED = "MULTICOMPANY_PERMISSION_DENIED"
@@ -77,6 +88,7 @@ class MatiasConnection(models.Model):
 
     CATALOGS_PENDING = "pending"
     CATALOGS_SYNCED = "synced"
+    CATALOGS_PARTIAL = "partial"
     CATALOGS_ERROR = "error"
 
     name = models.CharField(max_length=120, default="MATIAS API")
@@ -92,6 +104,9 @@ class MatiasConnection(models.Model):
     token_external_id = models.CharField(max_length=120, blank=True)
     token_name = models.CharField(max_length=120, blank=True)
     token_expires_at = models.DateTimeField(null=True, blank=True)
+    token_created_at = models.DateTimeField(null=True, blank=True)
+    authenticated_user_id = models.CharField(max_length=120, blank=True)
+    authenticated_user_email = models.EmailField(blank=True)
     account_email = models.EmailField(blank=True)
 
     parent_company_uuid = models.CharField(max_length=120, blank=True)
@@ -100,6 +115,14 @@ class MatiasConnection(models.Model):
     external_company_nit = models.CharField(max_length=50, blank=True)
     account_main_email = models.EmailField(blank=True)
     linked_companies_count = models.PositiveIntegerField(default=0)
+    external_company_status = models.CharField(max_length=80, blank=True)
+    membership_plan = models.CharField(max_length=120, blank=True)
+    membership_status = models.CharField(max_length=80, blank=True)
+    membership_expires_at = models.DateTimeField(null=True, blank=True)
+    membership_documents_available = models.PositiveIntegerField(null=True, blank=True)
+    membership_documents_consumed = models.PositiveIntegerField(null=True, blank=True)
+    membership_company_limit = models.PositiveIntegerField(null=True, blank=True)
+    membership_summary = models.JSONField(default=dict, blank=True)
 
     connection_status = models.CharField(max_length=40, default=STATUS_DISABLED)
     operational_status = models.CharField(max_length=50, default=OP_INACTIVE)
@@ -117,6 +140,7 @@ class MatiasConnection(models.Model):
     catalogs_status = models.CharField(max_length=20, default=CATALOGS_PENDING)
     catalogs_synced_count = models.PositiveSmallIntegerField(default=0)
     catalogs_total_count = models.PositiveSmallIntegerField(default=18)
+    catalogs_last_attempt_at = models.DateTimeField(null=True, blank=True)
     catalogs_last_synced_at = models.DateTimeField(null=True, blank=True)
     catalogs_detail = models.JSONField(default=list, blank=True)
 
@@ -128,6 +152,30 @@ class MatiasConnection(models.Model):
     class Meta:
         db_table = "matias_connections"
         ordering = ["-created_at"]
+        constraints = [models.UniqueConstraint(fields=["environment"], name="unique_matias_connection_environment")]
 
     def __str__(self):
         return f"{self.name} ({self.environment})"
+
+
+class MatiasCatalogSync(models.Model):
+    connection = models.ForeignKey(MatiasConnection, on_delete=models.CASCADE, related_name="catalog_syncs")
+    catalog_name = models.CharField(max_length=120)
+    endpoint = models.CharField(max_length=120)
+    status = models.CharField(max_length=20, default=MatiasConnection.CATALOGS_PENDING)
+    records_count = models.PositiveIntegerField(null=True, blank=True)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    last_success_at = models.DateTimeField(null=True, blank=True)
+    http_status = models.PositiveSmallIntegerField(null=True, blank=True)
+    response_time_ms = models.PositiveIntegerField(null=True, blank=True)
+    error_message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "matias_catalog_syncs"
+        unique_together = ["connection", "endpoint"]
+        ordering = ["endpoint"]
+
+    def __str__(self):
+        return f"{self.catalog_name} ({self.connection.environment})"
