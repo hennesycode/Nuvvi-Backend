@@ -31,6 +31,7 @@ class Company(models.Model):
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    environment = models.CharField(max_length=20, default="sandbox")
     legal_name = models.CharField(max_length=255)
     nit = models.CharField(max_length=50, db_index=True)
     email = models.EmailField(db_index=True)
@@ -69,8 +70,14 @@ class Company(models.Model):
         db_table = "companies"
         ordering = ["-created_at"]
         indexes = [
+            models.Index(fields=["environment", "nit"], name="companies_env_nit_idx"),
+            models.Index(fields=["environment", "email"], name="companies_env_email_idx"),
             models.Index(fields=["nit", "archived_at"], name="companies_nit_archived_idx"),
             models.Index(fields=["email", "archived_at"], name="companies_email_archived_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["environment", "nit"], name="unique_company_nit_per_environment"),
+            models.UniqueConstraint(fields=["environment", "email"], name="unique_company_email_per_environment"),
         ]
 
     def __str__(self):
@@ -87,6 +94,7 @@ class CompanyProviderLink(models.Model):
     STATUS_REGISTERED = "REGISTERED"
     STATUS_PENDING_UPDATE = "PENDING_UPDATE"
     STATUS_SYNC_ERROR = "SYNC_ERROR"
+    STATUS_REMOTE_CREATED_IDENTIFIERS_PENDING = "REMOTE_CREATED_IDENTIFIERS_PENDING"
     STATUS_REMOTE_DISABLED = "REMOTE_DISABLED"
     STATUS_DELETION_PENDING = "DELETION_PENDING"
     STATUS_REMOTE_NOT_FOUND = "REMOTE_NOT_FOUND"
@@ -96,6 +104,7 @@ class CompanyProviderLink(models.Model):
         (STATUS_REGISTERED, "Registrada"),
         (STATUS_PENDING_UPDATE, "Actualización pendiente"),
         (STATUS_SYNC_ERROR, "Error de sincronización"),
+        (STATUS_REMOTE_CREATED_IDENTIFIERS_PENDING, "Identificadores MATIAS pendientes"),
         (STATUS_REMOTE_DISABLED, "Desactivada en proveedor"),
         (STATUS_DELETION_PENDING, "Desactivación pendiente"),
         (STATUS_REMOTE_NOT_FOUND, "No encontrada en proveedor"),

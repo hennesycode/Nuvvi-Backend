@@ -29,7 +29,7 @@ class CompanySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Company
-        fields = ["id", "legal_name", "nit", "email", "owner_first_name", "owner_last_name", "owner_user", "identity_document_id", "identity_document_code", "identity_document_name", "verification_digit", "organization_type_id", "organization_type_code", "organization_type_name", "accounting_regime_id", "accounting_regime_code", "accounting_regime_name", "fiscal_regime_id", "fiscal_regime_code", "fiscal_regime_name", "country_id", "department_id", "city_id", "address", "mobile", "phone", "notes", "assigned_executive", "local_status", "local_status_label", "onboarding_status", "onboarding_status_label", "created_by", "created_at", "updated_at", "archived_at", "provider_link", "recent_attempts"]
+        fields = ["id", "environment", "legal_name", "nit", "email", "owner_first_name", "owner_last_name", "owner_user", "identity_document_id", "identity_document_code", "identity_document_name", "verification_digit", "organization_type_id", "organization_type_code", "organization_type_name", "accounting_regime_id", "accounting_regime_code", "accounting_regime_name", "fiscal_regime_id", "fiscal_regime_code", "fiscal_regime_name", "country_id", "department_id", "city_id", "address", "mobile", "phone", "notes", "assigned_executive", "local_status", "local_status_label", "onboarding_status", "onboarding_status_label", "created_by", "created_at", "updated_at", "archived_at", "provider_link", "recent_attempts"]
         read_only_fields = ["id", "created_by", "created_at", "updated_at", "archived_at", "provider_link", "recent_attempts", "local_status_label", "onboarding_status_label"]
 
     def get_provider_link(self, obj):

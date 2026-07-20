@@ -67,15 +67,20 @@ def remote_records(data):
     records = get_records(data)
     if records:
         return records
+    if isinstance(data, list):
+        return data
     if isinstance(data, dict) and isinstance(data.get("customers"), list):
         return data["customers"]
+    if isinstance(data, dict) and isinstance(data.get("dataRecords"), dict) and isinstance(data["dataRecords"].get("data"), list):
+        return data["dataRecords"]["data"]
     return []
 
 
 def extract_remote_company(raw):
     if not isinstance(raw, dict):
         return {"id": "", "client_uuid": "", "name": "", "nit": "", "email": "", "enabled": False, "status": "", "subscription": {}, "raw": {}}
-    data = raw.get("data") if isinstance(raw.get("data"), dict) else raw.get("company") if isinstance(raw.get("company"), dict) else raw
+    records = remote_records(raw)
+    data = records[0] if records else raw.get("data") if isinstance(raw.get("data"), dict) else raw
     enabled = data.get("enabled")
     if enabled is None:
         enabled = data.get("active")
@@ -90,6 +95,18 @@ def extract_remote_company(raw):
         "subscription": data.get("subscription") if isinstance(data.get("subscription"), dict) else {},
         "raw": sanitized_payload(data),
     }
+
+
+def is_parent_company(remote, connection):
+    parent_uuid = str(connection.parent_company_uuid or "").strip()
+    parent_nit = normalize_nit(connection.external_company_nit)
+    return bool((parent_uuid and remote["client_uuid"] == parent_uuid) or (parent_nit and remote["nit"] == parent_nit))
+
+
+def provider_status_for_remote(remote):
+    if remote["id"] and remote["client_uuid"]:
+        return CompanyProviderLink.STATUS_REGISTERED
+    return CompanyProviderLink.STATUS_REMOTE_CREATED_IDENTIFIERS_PENDING
 
 
 class MatiasCompanyClient:
@@ -167,13 +184,25 @@ class CompanyApplicationService:
         response = self.client.list_companies()
         if not response["ok"]:
             return None, response
+        remotes = []
         for item in remote_records(response["data"]):
             remote = extract_remote_company(item)
+            if is_parent_company(remote, self.connection):
+                continue
+            remotes.append(remote)
+        self.update_linked_companies_count(len(remotes))
+        for remote in remotes:
             if (nit and remote["nit"] == nit) or (email and remote["email"] == email):
                 return remote, response
         return None, response
 
-    def update_link_from_remote(self, link, remote, *, status=CompanyProviderLink.STATUS_REGISTERED):
+    def update_linked_companies_count(self, count):
+        if self.connection.linked_companies_count != count:
+            self.connection.linked_companies_count = count
+            self.connection.save(update_fields=["linked_companies_count", "updated_at"])
+
+    def update_link_from_remote(self, link, remote, *, status=None):
+        status = status or provider_status_for_remote(remote)
         link.parent_company_uuid = self.connection.parent_company_uuid
         link.matias_company_id = remote["id"] or link.matias_company_id
         link.matias_client_uuid = remote["client_uuid"] or link.matias_client_uuid
@@ -192,15 +221,15 @@ class CompanyApplicationService:
 
     @transaction.atomic
     def create_local_company(self, *, data, request_id):
-        existing_request = CompanySyncAttempt.objects.filter(request_identifier=request_id, operation="CREATE", successful=True, company__isnull=False).first()
+        existing_request = CompanySyncAttempt.objects.filter(request_identifier=request_id, operation="CREATE", company__isnull=False).first()
         if existing_request:
             return existing_request.company, existing_request.company.provider_links.filter(provider=CompanyProviderLink.PROVIDER_MATIAS, environment=self.connection.environment).first(), True
 
         nit = normalize_nit(data["nit"])
         email = normalize_email(data["email"])
-        if Company.objects.filter(nit=nit, archived_at__isnull=True).exists():
+        if Company.objects.filter(environment=self.connection.environment, nit=nit, archived_at__isnull=True).exists():
             raise CompanyValidationError("Ya existe una empresa con este NIT.")
-        if Company.objects.filter(email=email, archived_at__isnull=True).exists():
+        if Company.objects.filter(environment=self.connection.environment, email=email, archived_at__isnull=True).exists():
             raise CompanyValidationError("Ya existe una empresa con este correo.")
         if User.objects.filter(email__iexact=email).exists():
             raise CompanyValidationError("Ya existe un usuario con este correo.")
@@ -227,6 +256,7 @@ class CompanyApplicationService:
         owner_user.save()
         company = Company.objects.create(
             legal_name=str(data["company_name"]).strip(),
+            environment=self.connection.environment,
             nit=nit,
             email=email,
             owner_first_name=str(data["first_name"]).strip(),
@@ -299,6 +329,14 @@ class CompanyApplicationService:
         response = self.client.create_company(parent_uuid=self.connection.parent_company_uuid, payload=payload)
         success = response["ok"]
         self.record_attempt(company=company, operation="CREATE", request_id=request_id, response=response, method="POST", successful=success, error_code=str(response.get("status_code") or ""))
+        remote = self.recover_remote_company(nit=nit, email=email)
+        if remote:
+            self.update_link_from_remote(link, remote)
+            if link.matias_client_uuid:
+                detail = self.client.get_company(client_uuid=link.matias_client_uuid)
+                self.record_attempt(company=company, operation="VERIFY", response=detail, method="GET", successful=detail["ok"])
+            write_audit_log(request=self.request, action="empresa_creada_matias", entity="Company", entity_id=company.id, status=AuditLog.STATUS_SUCCESS, message="Empresa creada y sincronizada con MATIAS.", metadata={"environment": self.connection.environment, "provider_status": link.provider_status})
+            return company
         if not success and response.get("error_type") != "TIMEOUT" and response.get("status_code") not in (500, 502, 503, 504):
             link.provider_status = CompanyProviderLink.STATUS_SYNC_ERROR
             link.last_error_code = str(response.get("status_code") or "MATIAS_ERROR")
@@ -306,19 +344,13 @@ class CompanyApplicationService:
             link.save()
             raise CompanyValidationError(link.last_error_message)
 
-        remote = self.recover_remote_company(nit=nit, email=email)
         if not remote:
-            link.provider_status = CompanyProviderLink.STATUS_SYNC_ERROR
+            link.provider_status = CompanyProviderLink.STATUS_REMOTE_CREATED_IDENTIFIERS_PENDING if success else CompanyProviderLink.STATUS_SYNC_ERROR
             link.last_sync_at = timezone.now()
             link.last_error_code = "REMOTE_NOT_FOUND_AFTER_CREATE"
-            link.last_error_message = "La empresa local fue creada, pero MATIAS aún no devolvió ID o UUID. Use sincronizar para reconciliar."
+            link.last_error_message = "MATIAS aceptó o dejó incierta la creación, pero aún no devolvió ID o UUID. Use sincronizar para reconciliar."
             link.save()
             return company
-        self.update_link_from_remote(link, remote)
-        if link.matias_client_uuid:
-            detail = self.client.get_company(client_uuid=link.matias_client_uuid)
-            self.record_attempt(company=company, operation="VERIFY", response=detail, method="GET", successful=detail["ok"])
-        write_audit_log(request=self.request, action="empresa_creada_matias", entity="Company", entity_id=company.id, status=AuditLog.STATUS_SUCCESS, message="Empresa creada y sincronizada con MATIAS.", metadata={"environment": self.connection.environment})
         return company
 
     def recover_remote_company(self, *, nit, email):
@@ -351,9 +383,9 @@ class CompanyApplicationService:
             raise CompanyValidationError("La empresa no tiene identificadores MATIAS completos para editar.")
         new_nit = normalize_nit(data.get("nit", company.nit))
         new_email = normalize_email(data.get("email", company.email))
-        if Company.objects.filter(nit=new_nit, archived_at__isnull=True).exclude(id=company.id).exists():
+        if Company.objects.filter(environment=self.connection.environment, nit=new_nit, archived_at__isnull=True).exclude(id=company.id).exists():
             raise CompanyValidationError("Ya existe una empresa con este NIT.")
-        if Company.objects.filter(email=new_email, archived_at__isnull=True).exclude(id=company.id).exists():
+        if Company.objects.filter(environment=self.connection.environment, email=new_email, archived_at__isnull=True).exclude(id=company.id).exists():
             raise CompanyValidationError("Ya existe una empresa con este correo.")
         previous = {"legal_name": company.legal_name, "nit": company.nit, "email": company.email}
         link.provider_status = CompanyProviderLink.STATUS_PENDING_UPDATE
@@ -444,7 +476,7 @@ def search_companies(queryset, params):
     if params.get("onboarding_status"):
         queryset = queryset.filter(onboarding_status=params["onboarding_status"])
     if params.get("environment"):
-        queryset = queryset.filter(provider_links__environment=params["environment"])
+        queryset = queryset.filter(environment=params["environment"])
     if params.get("provider_status"):
         queryset = queryset.filter(provider_links__provider_status=params["provider_status"])
     return queryset.distinct()
