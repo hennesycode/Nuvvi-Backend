@@ -4,7 +4,7 @@ import json
 import time
 import urllib.error
 import urllib.request
-from datetime import timedelta
+from datetime import datetime
 from urllib.parse import urljoin
 
 from cryptography.fernet import Fernet
@@ -20,23 +20,24 @@ from .models import MatiasConnection
 SANDBOX_URL = "https://sandbox-api.matias-api.com/api/ubl2.1"
 PRODUCTION_URL = "https://api-v2.matias-api.com/api/ubl2.1"
 CATALOG_ENDPOINTS = [
-    ("countries", "Países"),
-    ("departments", "Departamentos"),
-    ("cities", "Ciudades"),
-    ("identity-documents", "Tipos de identificación"),
-    ("organization-type", "Tipo de organización"),
-    ("accounting-regime", "Régimen contable"),
-    ("fiscal-regime", "Régimen fiscal"),
-    ("document-type", "Tipos de documento"),
-    ("operation-type", "Tipos de operación"),
     ("destination-environment", "Ambientes destino"),
+    ("document-type", "Tipos de documento"),
     ("payment-methods", "Métodos de pago"),
     ("payment-means", "Medios de pago"),
-    ("currencies", "Monedas"),
-    ("taxes", "Impuestos"),
-    ("tax-rates", "Tarifas de impuesto"),
-    ("quantity-units", "Unidades de medida"),
+    ("identity-documents", "Tipos de identificación"),
+    ("fiscal-regime", "Régimen fiscal"),
+    ("accounting-regime", "Régimen contable"),
+    ("delivery-conditions", "Condiciones de entrega"),
     ("correction-notes", "Notas de corrección"),
+    ("discount-codes", "Códigos de descuento"),
+    ("operation-type", "Tipos de operación"),
+    ("taxes", "Impuestos"),
+    ("quantity-units", "Unidades de medida"),
+    ("reference-price", "Precios de referencia"),
+    ("cities", "Ciudades"),
+    ("departments", "Departamentos"),
+    ("countries", "Países"),
+    ("currencies", "Monedas"),
 ]
 
 
@@ -122,6 +123,25 @@ def extract_company(data):
     return {"uuid": "", "id": "", "name": "", "nit": "", "email": ""}
 
 
+def parse_matias_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value if timezone.is_aware(value) else timezone.make_aware(value)
+    if isinstance(value, str):
+        normalized = value.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+            return parsed if timezone.is_aware(parsed) else timezone.make_aware(parsed)
+        except ValueError:
+            return None
+    return None
+
+
+def is_token_expired(connection):
+    return bool(connection.encrypted_access_token and connection.token_expires_at and connection.token_expires_at <= timezone.now())
+
+
 def run_connection_test(connection, request=None):
     token = decrypt_secret(connection.encrypted_access_token)
     now = timezone.now()
@@ -131,18 +151,30 @@ def run_connection_test(connection, request=None):
     last_error = ""
     response_time = None
 
-    if not connection.enabled or not connection.base_url.startswith("https://"):
+    if not connection.enabled:
+        status = MatiasConnection.STATUS_DISABLED
+        operational = MatiasConnection.OP_INACTIVE
+        last_error = "La integración está desactivada."
+        results.append({"label": "Integración activa", "status": "warning", "detail": last_error})
+    elif not connection.base_url.startswith("https://"):
         status = MatiasConnection.STATUS_CONFIGURATION_ERROR
         operational = MatiasConnection.OP_PARENT_NOT_FOUND
-        last_error = "La integración está desactivada o la URL no usa HTTPS."
+        last_error = "La URL base debe usar HTTPS."
         results.append({"label": "URL disponible", "status": "error", "detail": last_error})
     else:
         results.append({"label": "URL válida HTTPS", "status": "success", "detail": "Configuración básica correcta."})
 
-    if not token:
+    if status in (MatiasConnection.STATUS_DISABLED, MatiasConnection.STATUS_CONFIGURATION_ERROR):
+        pass
+    elif not token:
+        status = MatiasConnection.STATUS_NOT_CONFIGURED
+        operational = MatiasConnection.OP_PAT_REQUIRED
+        last_error = "No hay Personal Access Token configurado."
+        results.append({"label": "Token válido", "status": "error", "detail": last_error})
+    elif is_token_expired(connection):
         status = MatiasConnection.STATUS_AUTHENTICATION_ERROR
         operational = MatiasConnection.OP_TOKEN_EXPIRED
-        last_error = "No hay Personal Access Token configurado."
+        last_error = "El PAT guardado venció según la fecha devuelta por MATIAS."
         results.append({"label": "Token válido", "status": "error", "detail": last_error})
     else:
         auth = matias_request(connection, "/auth/user", token=token)
@@ -151,8 +183,8 @@ def run_connection_test(connection, request=None):
             results.append({"label": "Token válido", "status": "success", "detail": "Usuario autenticado."})
         else:
             status = MatiasConnection.STATUS_AUTHENTICATION_ERROR if auth["status_code"] in (401, 403) else MatiasConnection.STATUS_API_UNAVAILABLE
-            operational = MatiasConnection.OP_TOKEN_EXPIRED
             last_error = auth["error"] or f"HTTP {auth['status_code']}"
+            operational = MatiasConnection.OP_TOKEN_EXPIRED if "expired" in last_error.lower() or "venc" in last_error.lower() else MatiasConnection.OP_PAT_REQUIRED
             results.append({"label": "Token válido", "status": "error", "detail": last_error})
 
         company_response = matias_request(connection, "/company", token=token)
@@ -192,7 +224,7 @@ def run_connection_test(connection, request=None):
         else:
             results.append({"label": "Ambiente confirmado", "status": "success", "detail": detected or connection.environment})
 
-        catalog = matias_request(connection, "/countries", token=token)
+        catalog = matias_request(connection, "/countries")
         if catalog["ok"]:
             results.append({"label": "Catálogos disponibles", "status": "success", "detail": "Endpoint /countries disponible."})
         else:
@@ -231,20 +263,19 @@ def run_connection_test(connection, request=None):
 
 
 def sync_catalogs(connection, request=None):
-    token = decrypt_secret(connection.encrypted_access_token)
     details = []
     synced = 0
-    if not token:
+    if not connection.base_url.startswith("https://"):
         connection.catalogs_status = MatiasConnection.CATALOGS_ERROR
         connection.last_error_at = timezone.now()
-        connection.last_error_code = "TOKEN_REQUIRED"
-        connection.last_error_message = "No hay PAT configurado para sincronizar catálogos."
+        connection.last_error_code = "CATALOGS_UNAVAILABLE"
+        connection.last_error_message = "No se pudo acceder a los catálogos de MATIAS."
         connection.save()
         write_audit_log(request=request, action="matias_catalogos_error", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_ERROR, message="Sincronización de catálogos fallida.", error_message=connection.last_error_message)
         return connection
 
     for endpoint, label in CATALOG_ENDPOINTS:
-        response = matias_request(connection, f"/{endpoint}", token=token)
+        response = matias_request(connection, f"/{endpoint}")
         data = response["data"].get("data", response["data"])
         count = len(data) if isinstance(data, list) else None
         item_status = "Sincronizado" if response["ok"] else "Error"
@@ -257,6 +288,10 @@ def sync_catalogs(connection, request=None):
     connection.catalogs_status = MatiasConnection.CATALOGS_SYNCED if synced == len(CATALOG_ENDPOINTS) else MatiasConnection.CATALOGS_ERROR
     connection.catalogs_last_synced_at = timezone.now()
     connection.catalogs_detail = details
+    if connection.catalogs_status == MatiasConnection.CATALOGS_ERROR:
+        connection.last_error_at = timezone.now()
+        connection.last_error_code = "CATALOGS_UNAVAILABLE"
+        connection.last_error_message = "No se pudo acceder a los catálogos de MATIAS."
     if connection.catalogs_status == MatiasConnection.CATALOGS_SYNCED and connection.connection_status == MatiasConnection.STATUS_CONNECTED and connection.multicompany_verified:
         connection.operational_status = MatiasConnection.OP_READY
     connection.save()
@@ -274,7 +309,10 @@ def generate_pat(connection, *, email, password, token_name, description, expire
     if not access_token:
         raise ValueError("MATIAS no retornó access_token temporal.")
 
-    token_response = matias_request(connection, "/tokens", method="POST", token=access_token, payload={"name": token_name, "description": description, "expires_in_days": expires_in_days})
+    endpoint = connection.token_generation_endpoint or "/tokens"
+    token_response = matias_request(connection, endpoint, method="POST", token=access_token, payload={"name": token_name, "description": description, "expires_in_days": expires_in_days})
+    if endpoint == "/tokens" and token_response["status_code"] == 404:
+        token_response = matias_request(connection, "/auth/token", method="POST", token=access_token, payload={"name": token_name, "description": description, "expires_in_days": expires_in_days})
     if not token_response["ok"]:
         write_audit_log(request=request, action="matias_pat_generacion_fallida", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_ERROR, message="No se pudo generar el PAT de MATIAS.", error_message=token_response["error"] or f"HTTP {token_response['status_code']}")
         raise ValueError("No se pudo generar el PAT de MATIAS.")
@@ -288,7 +326,10 @@ def generate_pat(connection, *, email, password, token_name, description, expire
     connection.token_name = token_name
     connection.token_external_id = str(data.get("id") or data.get("token_id") or "")
     connection.account_email = email
-    connection.token_expires_at = timezone.now() + timedelta(days=int(expires_in_days))
+    connection.token_expires_at = parse_matias_datetime(data.get("expires_at") or data.get("expiresAt") or data.get("expiration_date") or data.get("valid_until"))
+    if connection.enabled:
+        connection.connection_status = MatiasConnection.STATUS_DISCONNECTED
+        connection.operational_status = MatiasConnection.OP_CATALOGS_NOT_SYNCED
     connection.save()
     write_audit_log(request=request, action="matias_pat_generado", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_SUCCESS, message="PAT de MATIAS generado y guardado cifrado.", metadata={"email": email, "token_name": token_name})
     return connection

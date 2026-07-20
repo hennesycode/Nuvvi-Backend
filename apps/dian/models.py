@@ -61,10 +61,14 @@ class MatiasConnection(models.Model):
 
     STATUS_CONNECTED = "CONNECTED"
     STATUS_DISCONNECTED = "DISCONNECTED"
+    STATUS_DISABLED = "DISABLED"
+    STATUS_NOT_CONFIGURED = "NOT_CONFIGURED"
     STATUS_AUTHENTICATION_ERROR = "AUTHENTICATION_ERROR"
     STATUS_API_UNAVAILABLE = "API_UNAVAILABLE"
     STATUS_CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
 
+    OP_INACTIVE = "INACTIVE"
+    OP_PAT_REQUIRED = "PAT_REQUIRED"
     OP_READY = "READY_TO_REGISTER_COMPANIES"
     OP_PARENT_NOT_FOUND = "PARENT_COMPANY_NOT_FOUND"
     OP_MULTICOMPANY_DENIED = "MULTICOMPANY_PERMISSION_DENIED"
@@ -81,6 +85,7 @@ class MatiasConnection(models.Model):
     enabled = models.BooleanField(default=False)
     timeout_seconds = models.PositiveSmallIntegerField(default=20)
     retry_attempts = models.PositiveSmallIntegerField(default=2)
+    token_generation_endpoint = models.CharField(max_length=80, default="/tokens")
 
     auth_method = models.CharField(max_length=20, default="PAT")
     encrypted_access_token = models.TextField(blank=True)
@@ -96,8 +101,8 @@ class MatiasConnection(models.Model):
     account_main_email = models.EmailField(blank=True)
     linked_companies_count = models.PositiveIntegerField(default=0)
 
-    connection_status = models.CharField(max_length=40, default=STATUS_DISCONNECTED)
-    operational_status = models.CharField(max_length=50, default=OP_CATALOGS_NOT_SYNCED)
+    connection_status = models.CharField(max_length=40, default=STATUS_DISABLED)
+    operational_status = models.CharField(max_length=50, default=OP_INACTIVE)
     environment_detected = models.CharField(max_length=30, blank=True)
     multicompany_verified = models.BooleanField(default=False)
 
@@ -111,7 +116,7 @@ class MatiasConnection(models.Model):
 
     catalogs_status = models.CharField(max_length=20, default=CATALOGS_PENDING)
     catalogs_synced_count = models.PositiveSmallIntegerField(default=0)
-    catalogs_total_count = models.PositiveSmallIntegerField(default=17)
+    catalogs_total_count = models.PositiveSmallIntegerField(default=18)
     catalogs_last_synced_at = models.DateTimeField(null=True, blank=True)
     catalogs_detail = models.JSONField(default=list, blank=True)
 

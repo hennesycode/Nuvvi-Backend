@@ -13,7 +13,7 @@ class MatiasConnectionSerializer(serializers.ModelSerializer):
         model = MatiasConnection
         fields = [
             "id", "name", "environment", "environment_label", "base_url", "default_base_url", "enabled",
-            "timeout_seconds", "retry_attempts", "auth_method", "token_preview", "token_external_id",
+            "timeout_seconds", "retry_attempts", "token_generation_endpoint", "auth_method", "token_preview", "token_external_id",
             "token_name", "token_expires_at", "account_email", "parent_company_uuid", "external_company_id",
             "external_company_name", "external_company_nit", "account_main_email", "linked_companies_count",
             "connection_status", "operational_status", "environment_detected", "multicompany_verified",
@@ -22,7 +22,7 @@ class MatiasConnectionSerializer(serializers.ModelSerializer):
             "catalogs_total_count", "catalogs_last_synced_at", "catalogs_detail", "created_at", "updated_at",
         ]
         read_only_fields = [
-            "id", "auth_method", "token_preview", "external_company_id", "external_company_name", "external_company_nit",
+            "id", "auth_method", "token_preview", "token_external_id", "token_expires_at", "external_company_id", "external_company_name", "external_company_nit",
             "account_main_email", "linked_companies_count", "connection_status", "operational_status",
             "environment_detected", "multicompany_verified", "last_test_at", "last_success_at", "last_error_at",
             "last_error_code", "last_error_message", "last_response_time_ms", "last_test_results", "catalogs_status",
@@ -43,18 +43,19 @@ class MatiasConnectionSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         base_url = attrs.get("base_url", getattr(self.instance, "base_url", ""))
         environment = attrs.get("environment", getattr(self.instance, "environment", MatiasConnection.ENVIRONMENT_SANDBOX))
+        token_generation_endpoint = attrs.get("token_generation_endpoint", getattr(self.instance, "token_generation_endpoint", "/tokens"))
         if not str(base_url).startswith("https://"):
             raise serializers.ValidationError({"base_url": "La URL base debe usar HTTPS."})
         if environment not in dict(MatiasConnection.ENVIRONMENT_CHOICES):
             raise serializers.ValidationError({"environment": "Ambiente inválido."})
+        if not str(token_generation_endpoint).startswith("/"):
+            raise serializers.ValidationError({"token_generation_endpoint": "El endpoint de creación PAT debe iniciar con /."})
         return attrs
 
 
 class MatiasTokenSerializer(serializers.Serializer):
     access_token = serializers.CharField(write_only=True)
     token_name = serializers.CharField(required=False, allow_blank=True, max_length=120)
-    token_external_id = serializers.CharField(required=False, allow_blank=True, max_length=120)
-    token_expires_at = serializers.DateTimeField(required=False, allow_null=True)
     account_email = serializers.EmailField(required=False, allow_blank=True)
 
 

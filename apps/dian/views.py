@@ -6,7 +6,8 @@ from rest_framework.views import APIView
 from apps.audit.models import AuditLog
 from apps.audit.services import write_audit_log
 
-from .matias_service import encrypt_secret, generate_pat, get_connection, run_connection_test, sync_catalogs
+from .matias_service import encrypt_secret, generate_pat, get_connection, is_token_expired, run_connection_test, sync_catalogs
+from .models import MatiasConnection
 from .serializers import MatiasConnectionSerializer, MatiasGeneratePatSerializer, MatiasTokenSerializer
 
 
@@ -15,6 +16,25 @@ def safe_errors(serializer):
     errors.pop("access_token", None)
     errors.pop("password", None)
     return errors
+
+
+def apply_local_status(connection):
+    if not connection.enabled:
+        connection.connection_status = MatiasConnection.STATUS_DISABLED
+        connection.operational_status = MatiasConnection.OP_INACTIVE
+    elif not connection.encrypted_access_token:
+        connection.connection_status = MatiasConnection.STATUS_NOT_CONFIGURED
+        connection.operational_status = MatiasConnection.OP_PAT_REQUIRED
+    elif is_token_expired(connection):
+        connection.connection_status = MatiasConnection.STATUS_AUTHENTICATION_ERROR
+        connection.operational_status = MatiasConnection.OP_TOKEN_EXPIRED
+    elif connection.connection_status in (
+        MatiasConnection.STATUS_DISABLED,
+        MatiasConnection.STATUS_NOT_CONFIGURED,
+        MatiasConnection.STATUS_AUTHENTICATION_ERROR,
+    ):
+        connection.connection_status = MatiasConnection.STATUS_DISCONNECTED
+        connection.operational_status = MatiasConnection.OP_CATALOGS_NOT_SYNCED
 
 
 class IsSuperAdmin(BasePermission):
@@ -46,6 +66,8 @@ class MatiasConnectionView(APIView):
             )
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         updated = serializer.save(updated_by=request.user, created_by=connection.created_by or request.user)
+        apply_local_status(updated)
+        updated.save()
         write_audit_log(
             request=request,
             action="matias_configuracion_guardada",
@@ -78,12 +100,13 @@ class MatiasTokenView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         connection.encrypted_access_token = encrypt_secret(serializer.validated_data["access_token"])
         connection.token_name = serializer.validated_data.get("token_name", connection.token_name)
-        connection.token_external_id = serializer.validated_data.get("token_external_id", connection.token_external_id)
-        connection.token_expires_at = serializer.validated_data.get("token_expires_at", connection.token_expires_at)
         connection.account_email = serializer.validated_data.get("account_email", connection.account_email)
+        connection.token_external_id = ""
+        connection.token_expires_at = None
         connection.updated_by = request.user
         if not connection.created_by:
             connection.created_by = request.user
+        apply_local_status(connection)
         connection.save()
         write_audit_log(request=request, action="matias_pat_guardado", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_SUCCESS, message="PAT de MATIAS guardado cifrado.", metadata={"token_name": connection.token_name, "account_email": connection.account_email})
         return Response(MatiasConnectionSerializer(connection).data)
