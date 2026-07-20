@@ -58,8 +58,9 @@ def user_identification_type_from_matias(data):
     return User.IDENTIFICATION_CC
 
 
-def is_matias_nit_document(data):
-    return user_identification_type_from_matias(data) == User.IDENTIFICATION_NIT
+def requires_verification_digit(data):
+    identification_type = user_identification_type_from_matias(data)
+    return identification_type in (User.IDENTIFICATION_NIT, User.IDENTIFICATION_CC)
 
 
 def remote_records(data):
@@ -234,7 +235,7 @@ class CompanyApplicationService:
             identity_document_id=str(data.get("identity_document_id") or ""),
             identity_document_code=str(data.get("identity_document_code") or ""),
             identity_document_name=str(data.get("identity_document_name") or ""),
-            verification_digit=calculate_nit_verification_digit(nit) if is_matias_nit_document(data) else "",
+            verification_digit=calculate_nit_verification_digit(nit) if requires_verification_digit(data) else "",
             organization_type_id=str(data.get("organization_type_id") or ""),
             organization_type_code=str(data.get("organization_type_code") or ""),
             organization_type_name=str(data.get("organization_type_name") or ""),
