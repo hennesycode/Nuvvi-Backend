@@ -256,6 +256,15 @@ class CompanyApplicationService:
             created_by=self.user if getattr(self.user, "is_authenticated", False) else None,
         )
         link = CompanyProviderLink.objects.create(company=company, provider=CompanyProviderLink.PROVIDER_MATIAS, environment=self.connection.environment, parent_company_uuid=self.connection.parent_company_uuid, provider_status=CompanyProviderLink.STATUS_PENDING_CREATION)
+        write_audit_log(
+            request=self.request,
+            action="empresa_creada",
+            entity="Company",
+            entity_id=company.id,
+            status=AuditLog.STATUS_SUCCESS,
+            message="Empresa creada localmente con usuario Empresa.",
+            metadata={"environment": self.connection.environment, "nit": company.nit, "email": company.email, "owner_user_id": owner_user.id},
+        )
         return company, link, False
 
     def create_company(self, *, data, request_id):
