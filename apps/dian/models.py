@@ -72,6 +72,7 @@ class MatiasConnection(models.Model):
 
     OP_INACTIVE = "INACTIVE"
     OP_PAT_REQUIRED = "PAT_REQUIRED"
+    OP_PAT_ENDPOINT_NOT_FOUND = "PAT_ENDPOINT_NOT_FOUND"
     OP_PAT_VALID = "PAT_VALID"
     OP_ACCOUNT_NOT_DETECTED = "ACCOUNT_NOT_DETECTED"
     OP_PARENT_UUID_REQUIRED = "PARENT_UUID_REQUIRED"
@@ -97,7 +98,7 @@ class MatiasConnection(models.Model):
     enabled = models.BooleanField(default=False)
     timeout_seconds = models.PositiveSmallIntegerField(default=20)
     retry_attempts = models.PositiveSmallIntegerField(default=2)
-    token_generation_endpoint = models.CharField(max_length=80, default="/auth/token")
+    token_generation_endpoint = models.CharField(max_length=80, default="/tokens")
 
     auth_method = models.CharField(max_length=20, default="PAT")
     encrypted_access_token = models.TextField(blank=True)

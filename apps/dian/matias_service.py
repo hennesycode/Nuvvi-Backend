@@ -7,7 +7,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet
 from django.conf import settings
@@ -48,7 +48,11 @@ def get_default_url(environment):
 
 
 def get_default_token_endpoint(environment):
-    return "/tokens" if environment == MatiasConnection.ENVIRONMENT_PRODUCTION else "/auth/token"
+    return "/tokens"
+
+
+def build_matias_url(base_url, endpoint):
+    return f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
 
 
 def normalize_base_url(value):
@@ -99,10 +103,9 @@ def get_connection(environment=None):
 
 
 def matias_request(connection, endpoint, *, method="GET", token=None, payload=None, timeout=None):
-    base_url = connection.base_url.rstrip("/") + "/"
-    url = urljoin(base_url, endpoint.lstrip("/"))
+    url = build_matias_url(connection.base_url, endpoint)
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
-    headers = {"Content-Type": "application/json"}
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, data=body, method=method, headers=headers)
@@ -110,29 +113,40 @@ def matias_request(connection, endpoint, *, method="GET", token=None, payload=No
     try:
         with urllib.request.urlopen(request, timeout=timeout or connection.timeout_seconds) as response:
             raw = response.read().decode("utf-8")
+            content_type = response.headers.get("Content-Type", "")
             elapsed = int((time.perf_counter() - started) * 1000)
+            data = json.loads(raw) if raw and "application/json" in content_type.lower() else {}
             return {
                 "ok": 200 <= response.status < 300,
                 "status_code": response.status,
                 "headers": dict(response.headers.items()),
-                "data": json.loads(raw) if raw else {},
+                "data": data,
                 "response_time_ms": elapsed,
                 "error": "",
                 "endpoint": endpoint,
+                "url": url,
+                "content_type": content_type,
             }
     except urllib.error.HTTPError as exc:
         elapsed = int((time.perf_counter() - started) * 1000)
         raw = exc.read().decode("utf-8", errors="ignore")
-        return {"ok": False, "status_code": exc.code, "headers": dict(exc.headers.items()), "data": {}, "response_time_ms": elapsed, "error": raw or str(exc), "endpoint": endpoint}
+        content_type = exc.headers.get("Content-Type", "") if exc.headers else ""
+        data = {}
+        if raw and "application/json" in content_type.lower():
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                data = {}
+        return {"ok": False, "status_code": exc.code, "headers": dict(exc.headers.items()), "data": data, "response_time_ms": elapsed, "error": raw or str(exc), "endpoint": endpoint, "url": url, "content_type": content_type}
     except socket.timeout as exc:
         elapsed = int((time.perf_counter() - started) * 1000)
-        return {"ok": False, "status_code": 0, "headers": {}, "data": {}, "response_time_ms": elapsed, "error": str(exc), "error_type": "TIMEOUT", "endpoint": endpoint}
+        return {"ok": False, "status_code": 0, "headers": {}, "data": {}, "response_time_ms": elapsed, "error": str(exc), "error_type": "TIMEOUT", "endpoint": endpoint, "url": url, "content_type": ""}
     except ssl.SSLError as exc:
         elapsed = int((time.perf_counter() - started) * 1000)
-        return {"ok": False, "status_code": 0, "headers": {}, "data": {}, "response_time_ms": elapsed, "error": str(exc), "error_type": "SSL_ERROR", "endpoint": endpoint}
+        return {"ok": False, "status_code": 0, "headers": {}, "data": {}, "response_time_ms": elapsed, "error": str(exc), "error_type": "SSL_ERROR", "endpoint": endpoint, "url": url, "content_type": ""}
     except Exception as exc:
         elapsed = int((time.perf_counter() - started) * 1000)
-        return {"ok": False, "status_code": 0, "headers": {}, "data": {}, "response_time_ms": elapsed, "error": str(exc), "error_type": "API_UNAVAILABLE", "endpoint": endpoint}
+        return {"ok": False, "status_code": 0, "headers": {}, "data": {}, "response_time_ms": elapsed, "error": str(exc), "error_type": "API_UNAVAILABLE", "endpoint": endpoint, "url": url, "content_type": ""}
 
 
 def get_records(data):
@@ -481,24 +495,44 @@ def generate_pat(connection, *, email, password, token_name, description, expire
         if not access_token:
             raise ValueError("MATIAS no retornó access_token temporal.")
 
-        endpoint = connection.token_generation_endpoint or "/tokens"
+        endpoint = connection.token_generation_endpoint or get_default_token_endpoint(connection.environment)
         token_response = matias_request(connection, endpoint, method="POST", token=access_token, payload={"name": token_name, "description": description, "expires_in_days": expires_in_days})
-        if endpoint == "/tokens" and token_response["status_code"] == 404:
-            token_response = matias_request(connection, "/auth/token", method="POST", token=access_token, payload={"name": token_name, "description": description, "expires_in_days": expires_in_days})
-        if not token_response["ok"]:
-            write_audit_log(request=request, action="matias_pat_generacion_fallida", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_ERROR, message="No se pudo generar el PAT de MATIAS.", error_message=token_response["error"] or f"HTTP {token_response['status_code']}")
-            raise ValueError("No se pudo generar el PAT de MATIAS.")
+        metadata = {
+            "stage": "PAT_CREATION",
+            "external_method": "POST",
+            "external_url": token_response.get("url"),
+            "external_http_status": token_response.get("status_code"),
+            "external_content_type": token_response.get("content_type"),
+            "environment": connection.environment,
+        }
+        if token_response["status_code"] == 404:
+            connection.connection_status = MatiasConnection.STATUS_CONFIGURATION_ERROR
+            connection.operational_status = MatiasConnection.OP_PAT_ENDPOINT_NOT_FOUND
+            connection.last_error_at = timezone.now()
+            connection.last_error_code = "PAT_ENDPOINT_NOT_FOUND"
+            connection.last_error_message = "MATIAS aceptó las credenciales, pero el endpoint configurado para crear el PAT no existe. Verifique la ruta /tokens."
+            connection.save(update_fields=["connection_status", "operational_status", "last_error_at", "last_error_code", "last_error_message"])
+            write_audit_log(request=request, action="matias_pat_generacion_fallida", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_ERROR, message="No se pudo crear el PAT en MATIAS.", error_message=connection.last_error_message, metadata={**metadata, "error_code": "PAT_ENDPOINT_NOT_FOUND"})
+            raise ValueError(connection.last_error_message)
+        if "application/json" not in str(token_response.get("content_type", "")).lower():
+            write_audit_log(request=request, action="matias_pat_generacion_fallida", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_ERROR, message="MATIAS devolvió una respuesta no JSON al crear el PAT.", error_message=f"HTTP {token_response['status_code']}; content_type={token_response.get('content_type')}", metadata={**metadata, "error_code": "PAT_NON_JSON_RESPONSE"})
+            raise ValueError("MATIAS devolvió una respuesta no JSON al crear el PAT.")
+        if token_response["status_code"] != 201:
+            message = token_response["data"].get("message") if isinstance(token_response["data"], dict) else ""
+            write_audit_log(request=request, action="matias_pat_generacion_fallida", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_ERROR, message="MATIAS no pudo crear el PAT.", error_message=message or f"HTTP {token_response['status_code']}", metadata={**metadata, "error_code": "PAT_CREATION_FAILED"})
+            raise ValueError(message or "MATIAS no pudo crear el PAT.")
 
         data = token_response["data"].get("data", token_response["data"])
-        pat = data.get("plain_text_token") or data.get("access_token") or data.get("token")
+        pat = data.get("accessToken") or data.get("plain_text_token") or data.get("access_token") or data.get("token")
         if not pat:
-            raise ValueError("MATIAS no retornó el PAT generado.")
+            write_audit_log(request=request, action="matias_pat_generacion_fallida", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_ERROR, message="MATIAS creó el PAT pero no devolvió data.accessToken.", error_message="Respuesta exitosa sin data.accessToken.", metadata={**metadata, "error_code": "PAT_ACCESS_TOKEN_MISSING"})
+            raise ValueError("MATIAS respondió exitosamente, pero no devolvió data.accessToken.")
 
         connection = store_validated_pat(
             connection,
             pat,
-            token_name=token_name,
-            token_external_id=str(data.get("id") or data.get("token_id") or ""),
+            token_name=data.get("name") or token_name,
+            token_external_id=str(data.get("token_id") or data.get("id") or ""),
             token_expires_at=parse_matias_datetime(data.get("expires_at") or data.get("expiresAt") or data.get("expiration_date") or data.get("valid_until")),
             token_created_at=parse_matias_datetime(data.get("created_at") or data.get("createdAt")) or timezone.now(),
             account_email=email,

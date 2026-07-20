@@ -142,16 +142,6 @@ class MatiasGeneratePatView(APIView):
         try:
             connection = generate_pat(connection, request=request, **serializer.validated_data)
         except ValueError as exc:
-            write_audit_log(
-                request=request,
-                action="matias_pat_generacion_error",
-                entity="MatiasConnection",
-                entity_id=connection.id,
-                status=AuditLog.STATUS_ERROR,
-                message="No se pudo generar el PAT de MATIAS.",
-                error_message=str(exc),
-                metadata={"email": serializer.validated_data.get("email"), "token_name": serializer.validated_data.get("token_name")},
-            )
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(MatiasConnectionSerializer(connection).data)
 
