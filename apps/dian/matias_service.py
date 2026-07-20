@@ -202,14 +202,15 @@ def json_keys(value):
 
 def extract_company(data):
     if isinstance(data, dict):
-        company = data.get("data") if isinstance(data.get("data"), dict) else data.get("company") if isinstance(data.get("company"), dict) else data.get("dataRecords", {}).get("data") if isinstance(data.get("dataRecords", {}).get("data"), dict) else data
+        records = data.get("dataRecords", {}).get("data") if isinstance(data.get("dataRecords"), dict) else None
+        company = records[0] if isinstance(records, list) and records else records if isinstance(records, dict) else data.get("data") if isinstance(data.get("data"), dict) else data.get("company") if isinstance(data.get("company"), dict) else data
         return {
             "uuid": company.get("uuid") or company.get("company_uuid") or company.get("parent_company_uuid") or "",
             "id": str(company.get("id") or company.get("external_id") or company.get("company_id") or ""),
-            "name": company.get("name") or company.get("business_name") or company.get("legal_name") or "",
-            "nit": str(company.get("nit") or company.get("identification_number") or ""),
+            "name": company.get("company_name") or company.get("name") or company.get("business_name") or company.get("legal_name") or "",
+            "nit": str(company.get("dni") or company.get("nit") or company.get("identification_number") or ""),
             "email": company.get("email") or "",
-            "status": str(company.get("status") or ""),
+            "status": str(company.get("status") or "active" if company.get("active") == 1 else "inactive" if company.get("active") == 0 else ""),
         }
     return {"uuid": "", "id": "", "name": "", "nit": "", "email": "", "status": ""}
 
