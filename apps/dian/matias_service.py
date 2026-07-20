@@ -200,6 +200,14 @@ def json_keys(value):
     return list(value.keys()) if isinstance(value, dict) else []
 
 
+def is_optional_analytics_auth_error(response):
+    message = ""
+    if isinstance(response.get("data"), dict):
+        message = f"{response['data'].get('error', '')} {response['data'].get('message', '')}"
+    message = f"{message} {response.get('error', '')}".lower()
+    return response.get("endpoint") == "/memberships/analytics/consumption" and response.get("status_code") == 401 and "analytics token" in message
+
+
 def extract_company(data):
     if isinstance(data, dict):
         records = data.get("dataRecords", {}).get("data") if isinstance(data.get("dataRecords"), dict) else None
@@ -390,7 +398,15 @@ def run_connection_test(connection, request=None):
             membership_result["json_keys"] = json_keys(membership["data"])
             membership_result["payload_sanitized"] = sanitized_payload(membership["data"])
             results.append(membership_result)
-            consumption_result = diagnostic("Consumo membresía", consumption, ok=consumption.get("ok"), detail="Consumo consultado." if consumption.get("ok") else consumption.get("error") or "Consumo no disponible.")
+            analytics_auth_error = is_optional_analytics_auth_error(consumption)
+            consumption_result = diagnostic(
+                "Consumo membresía",
+                consumption,
+                ok=consumption.get("ok") or analytics_auth_error,
+                detail="Consumo consultado." if consumption.get("ok") else "Endpoint opcional no habilitado para este PAT de Sandbox; no afecta la conexión ni el registro de empresas." if analytics_auth_error else consumption.get("error") or "Consumo no disponible.",
+            )
+            if analytics_auth_error:
+                consumption_result["status"] = "warning"
             consumption_result["json_keys"] = json_keys(consumption.get("data"))
             results.append(consumption_result)
         else:
