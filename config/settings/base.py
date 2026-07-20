@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     "apps.subscriptions",
     "apps.api_keys",
     "apps.dian",
+    "apps.companies",
     "apps.billing",
     "apps.audit",
     "apps.core",
