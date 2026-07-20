@@ -1,4 +1,5 @@
 import re
+from uuid import UUID
 
 from rest_framework import serializers
 
@@ -62,6 +63,7 @@ class MatiasConnectionSerializer(serializers.ModelSerializer):
         token_generation_endpoint = attrs.get("token_generation_endpoint", getattr(self.instance, "token_generation_endpoint", get_default_token_endpoint(environment)))
         timeout_seconds = attrs.get("timeout_seconds", getattr(self.instance, "timeout_seconds", 20))
         retry_attempts = attrs.get("retry_attempts", getattr(self.instance, "retry_attempts", 2))
+        parent_company_uuid = attrs.get("parent_company_uuid", getattr(self.instance, "parent_company_uuid", ""))
         if not str(base_url).startswith("https://"):
             raise serializers.ValidationError({"base_url": "La URL base debe usar HTTPS."})
         attrs["base_url"] = base_url
@@ -75,6 +77,11 @@ class MatiasConnectionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"retry_attempts": "Los reintentos deben ser un entero no negativo."})
         if not str(token_generation_endpoint).startswith("/"):
             raise serializers.ValidationError({"token_generation_endpoint": "El endpoint de creación PAT debe iniciar con /."})
+        if parent_company_uuid:
+            try:
+                attrs["parent_company_uuid"] = str(UUID(str(parent_company_uuid).strip()))
+            except ValueError:
+                raise serializers.ValidationError({"parent_company_uuid": "El UUID de la empresa desarrolladora no es válido."})
         return attrs
 
 

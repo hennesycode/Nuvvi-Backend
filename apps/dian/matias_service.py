@@ -179,9 +179,30 @@ def diagnostic(label, response, *, ok=None, detail=""):
     }
 
 
+def sanitized_payload(value, depth=0):
+    if depth > 2:
+        return "..."
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if any(secret in lowered for secret in ("token", "authorization", "password", "secret")):
+                sanitized[key] = "***"
+            else:
+                sanitized[key] = sanitized_payload(item, depth + 1)
+        return sanitized
+    if isinstance(value, list):
+        return [sanitized_payload(item, depth + 1) for item in value[:3]]
+    return value
+
+
+def json_keys(value):
+    return list(value.keys()) if isinstance(value, dict) else []
+
+
 def extract_company(data):
     if isinstance(data, dict):
-        company = data.get("data") if isinstance(data.get("data"), dict) else data.get("dataRecords", {}).get("data") if isinstance(data.get("dataRecords", {}).get("data"), dict) else data
+        company = data.get("data") if isinstance(data.get("data"), dict) else data.get("company") if isinstance(data.get("company"), dict) else data.get("dataRecords", {}).get("data") if isinstance(data.get("dataRecords", {}).get("data"), dict) else data
         return {
             "uuid": company.get("uuid") or company.get("company_uuid") or company.get("parent_company_uuid") or "",
             "id": str(company.get("id") or company.get("external_id") or company.get("company_id") or ""),
@@ -211,6 +232,16 @@ def extract_membership(data):
         "company_limit": source.get("company_limit") or source.get("companies_limit") or source.get("customer_quota"),
         "raw": source,
     }
+
+
+def merge_membership_summary(summary, analytics):
+    merged = dict(summary)
+    source = analytics.get("data") if isinstance(analytics, dict) and isinstance(analytics.get("data"), dict) else analytics if isinstance(analytics, dict) else {}
+    merged["documents_available"] = merged.get("documents_available") or source.get("documents_available") or source.get("available_documents") or source.get("remaining_documents")
+    merged["documents_consumed"] = merged.get("documents_consumed") or source.get("documents_consumed") or source.get("consumed_documents") or source.get("used_documents")
+    merged["company_limit"] = merged.get("company_limit") or source.get("company_limit") or source.get("companies_limit") or source.get("customer_quota")
+    merged["raw"] = {"summary": summary.get("raw", {}), "analytics": source}
+    return merged
 
 
 def parse_matias_datetime(value):
@@ -314,7 +345,11 @@ def run_connection_test(connection, request=None):
                 connection.parent_company_uuid = company["uuid"]
             uuid_ok = bool(connection.parent_company_uuid)
             operational = MatiasConnection.OP_PARENT_UUID_REQUIRED if not uuid_ok else operational
-            results.append(diagnostic("Empresa", company_response, ok=company_ok, detail=company["name"] or "Empresa detectada." if company_ok else "No fue posible detectar la empresa principal."))
+            company_detail = company["name"] or "Empresa detectada." if company_ok else "No fue posible detectar el UUID automáticamente."
+            company_result = diagnostic("Empresa", company_response, ok=company_ok, detail=company_detail)
+            company_result["json_keys"] = json_keys(company_response["data"])
+            company_result["payload_sanitized"] = sanitized_payload(company_response["data"])
+            results.append(company_result)
         else:
             if pat_ok:
                 operational = MatiasConnection.OP_ACCOUNT_NOT_DETECTED
@@ -337,10 +372,11 @@ def run_connection_test(connection, request=None):
             results.append(diagnostic("Multiempresa", customers, ok=False, detail=last_error or "Pendiente de PAT válido."))
 
         membership = matias_request(connection, "/memberships/summary", token=token)
+        consumption = matias_request(connection, "/memberships/analytics/consumption", token=token) if pat_ok else {"ok": False, "data": {}, "error": "Pendiente de PAT válido.", "endpoint": "/memberships/analytics/consumption", "status_code": None, "response_time_ms": None}
         if pat_ok and membership["ok"]:
-            summary = extract_membership(membership["data"])
+            summary = merge_membership_summary(extract_membership(membership["data"]), consumption["data"] if consumption.get("ok") else {})
             connection.membership_plan = summary["plan"]
-            connection.membership_status = summary["status"]
+            connection.membership_status = summary["status"] or "Parcialmente detectada"
             connection.membership_expires_at = summary["expires_at"]
             connection.membership_documents_available = summary["documents_available"]
             connection.membership_documents_consumed = summary["documents_consumed"]
@@ -349,10 +385,15 @@ def run_connection_test(connection, request=None):
             membership_ok = not summary["status"] or str(summary["status"]).lower() in ("active", "activo", "valid", "vigente")
             if not membership_ok:
                 operational = MatiasConnection.OP_MEMBERSHIP_INACTIVE
-            results.append(diagnostic("Membresía", membership, ok=membership_ok, detail=summary["plan"] or "Resumen de membresía consultado."))
+            membership_result = diagnostic("Membresía", membership, ok=membership_ok, detail=summary["plan"] or "Resumen de membresía consultado.")
+            membership_result["json_keys"] = json_keys(membership["data"])
+            membership_result["payload_sanitized"] = sanitized_payload(membership["data"])
+            results.append(membership_result)
+            consumption_result = diagnostic("Consumo membresía", consumption, ok=consumption.get("ok"), detail="Consumo consultado." if consumption.get("ok") else consumption.get("error") or "Consumo no disponible.")
+            consumption_result["json_keys"] = json_keys(consumption.get("data"))
+            results.append(consumption_result)
         else:
             if pat_ok:
-                operational = MatiasConnection.OP_MEMBERSHIP_INACTIVE
                 last_error = membership["error"] or f"HTTP {membership['status_code']}"
             results.append(diagnostic("Membresía", membership, ok=False, detail=last_error or "Pendiente de PAT válido."))
 
@@ -371,8 +412,13 @@ def run_connection_test(connection, request=None):
         operational = MatiasConnection.OP_INACTIVE
     elif status not in (MatiasConnection.STATUS_DISABLED, MatiasConnection.STATUS_NOT_CONFIGURED, MatiasConnection.STATUS_AUTHENTICATION_ERROR, MatiasConnection.STATUS_API_UNAVAILABLE, MatiasConnection.STATUS_TIMEOUT, MatiasConnection.STATUS_CONFIGURATION_ERROR, MatiasConnection.STATUS_ENVIRONMENT_MISMATCH):
         status = MatiasConnection.STATUS_CONNECTED if server_ok and pat_ok else MatiasConnection.STATUS_AUTHENTICATION_ERROR
-    if server_ok and environment_ok and pat_ok and company_ok and uuid_ok and multicompany_ok and membership_ok and connection.catalogs_status == MatiasConnection.CATALOGS_SYNCED:
+    technical_connected = server_ok and environment_ok and pat_ok
+    if technical_connected:
+        status = MatiasConnection.STATUS_CONNECTED
+    if technical_connected and uuid_ok and multicompany_ok and membership_ok and connection.catalogs_status == MatiasConnection.CATALOGS_SYNCED:
         operational = MatiasConnection.OP_READY
+    elif technical_connected and not uuid_ok:
+        operational = MatiasConnection.OP_PARENT_UUID_REQUIRED
     elif connection.catalogs_status == MatiasConnection.CATALOGS_PARTIAL:
         operational = MatiasConnection.OP_CATALOGS_PARTIAL
     elif connection.catalogs_status != MatiasConnection.CATALOGS_SYNCED and operational in (MatiasConnection.OP_MULTICOMPANY_VERIFIED, MatiasConnection.OP_PAT_VALID):
@@ -383,7 +429,7 @@ def run_connection_test(connection, request=None):
     connection.last_test_at = now
     connection.last_response_time_ms = response_time
     connection.last_test_results = results
-    if status == MatiasConnection.STATUS_CONNECTED and operational == MatiasConnection.OP_READY:
+    if status == MatiasConnection.STATUS_CONNECTED:
         connection.last_success_at = now
         connection.last_error_code = ""
         connection.last_error_message = ""
@@ -401,7 +447,7 @@ def run_connection_test(connection, request=None):
         status=AuditLog.STATUS_SUCCESS if status == MatiasConnection.STATUS_CONNECTED else AuditLog.STATUS_ERROR,
         message="Prueba de conexión MATIAS ejecutada.",
         error_message=connection.last_error_message,
-        metadata={"connection_status": status, "operational_status": operational, "environment": connection.environment},
+        metadata={"connection_status": status, "operational_status": operational, "environment": connection.environment, "diagnostics": results},
     )
     return connection
 
