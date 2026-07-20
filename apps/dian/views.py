@@ -10,6 +10,13 @@ from .matias_service import encrypt_secret, generate_pat, get_connection, run_co
 from .serializers import MatiasConnectionSerializer, MatiasGeneratePatSerializer, MatiasTokenSerializer
 
 
+def safe_errors(serializer):
+    errors = dict(serializer.errors)
+    errors.pop("access_token", None)
+    errors.pop("password", None)
+    return errors
+
+
 class IsSuperAdmin(BasePermission):
     def has_permission(self, request, view):
         user = request.user
@@ -26,7 +33,18 @@ class MatiasConnectionView(APIView):
         connection = get_connection()
         previous_environment = connection.environment
         serializer = MatiasConnectionSerializer(connection, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            write_audit_log(
+                request=request,
+                action="matias_configuracion_error",
+                entity="MatiasConnection",
+                entity_id=connection.id,
+                status=AuditLog.STATUS_ERROR,
+                message="No se pudo guardar la configuración de MATIAS.",
+                error_message=str(safe_errors(serializer)),
+                metadata={"environment": request.data.get("environment"), "enabled": request.data.get("enabled")},
+            )
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         updated = serializer.save(updated_by=request.user, created_by=connection.created_by or request.user)
         write_audit_log(
             request=request,
@@ -46,7 +64,18 @@ class MatiasTokenView(APIView):
     def post(self, request):
         connection = get_connection()
         serializer = MatiasTokenSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            write_audit_log(
+                request=request,
+                action="matias_pat_error",
+                entity="MatiasConnection",
+                entity_id=connection.id,
+                status=AuditLog.STATUS_ERROR,
+                message="No se pudo guardar el PAT de MATIAS.",
+                error_message=str(safe_errors(serializer)),
+                metadata={"token_name": request.data.get("token_name"), "account_email": request.data.get("account_email")},
+            )
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         connection.encrypted_access_token = encrypt_secret(serializer.validated_data["access_token"])
         connection.token_name = serializer.validated_data.get("token_name", connection.token_name)
         connection.token_external_id = serializer.validated_data.get("token_external_id", connection.token_external_id)
@@ -66,10 +95,31 @@ class MatiasGeneratePatView(APIView):
     def post(self, request):
         connection = get_connection()
         serializer = MatiasGeneratePatSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            write_audit_log(
+                request=request,
+                action="matias_pat_generacion_error",
+                entity="MatiasConnection",
+                entity_id=connection.id,
+                status=AuditLog.STATUS_ERROR,
+                message="Solicitud inválida para generar PAT de MATIAS.",
+                error_message=str(safe_errors(serializer)),
+                metadata={"email": request.data.get("email"), "token_name": request.data.get("token_name")},
+            )
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         try:
             connection = generate_pat(connection, request=request, **serializer.validated_data)
         except ValueError as exc:
+            write_audit_log(
+                request=request,
+                action="matias_pat_generacion_error",
+                entity="MatiasConnection",
+                entity_id=connection.id,
+                status=AuditLog.STATUS_ERROR,
+                message="No se pudo generar el PAT de MATIAS.",
+                error_message=str(exc),
+                metadata={"email": serializer.validated_data.get("email"), "token_name": serializer.validated_data.get("token_name")},
+            )
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(MatiasConnectionSerializer(connection).data)
 
