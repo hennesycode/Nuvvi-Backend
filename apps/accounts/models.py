@@ -8,11 +8,13 @@ class User(AbstractBaseUser, PermissionsMixin):
     ROLE_SUPERADMIN = "superadmin"
     ROLE_FINANCE = "finance"
     ROLE_SUPPORT = "support"
+    ROLE_COMPANY = "company"
 
     ADMIN_ROLE_CHOICES = [
         (ROLE_SUPERADMIN, "Superadministrador"),
         (ROLE_FINANCE, "Finanzas y cartera"),
         (ROLE_SUPPORT, "Soporte"),
+        (ROLE_COMPANY, "Empresa"),
     ]
 
     IDENTIFICATION_CC = "cc"

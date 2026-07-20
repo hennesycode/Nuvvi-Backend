@@ -4,6 +4,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from apps.accounts.models import User
 from apps.audit.models import AuditLog
 from apps.audit.services import write_audit_log
 from apps.dian.matias_service import decrypt_secret, get_connection, get_records, matias_request, sanitized_payload
@@ -22,6 +23,29 @@ def normalize_nit(value):
 
 def normalize_email(value):
     return str(value or "").strip().lower()
+
+
+def unique_company_username(email):
+    base = normalize_email(email).split("@")[0] or "empresa"
+    base = "".join(ch for ch in base if ch.isalnum() or ch in "._-")[:40] or "empresa"
+    username = base
+    suffix = 1
+    while User.objects.filter(username__iexact=username).exists():
+        suffix += 1
+        username = f"{base}.{suffix}"
+    return username
+
+
+def user_identification_type_from_matias(data):
+    code = str(data.get("identity_document_code") or "").strip()
+    name = str(data.get("identity_document_name") or "").lower()
+    if code == "31" or "nit" in name:
+        return User.IDENTIFICATION_NIT
+    if code == "22" or "extranjer" in name:
+        return User.IDENTIFICATION_CE
+    if "pasaporte" in name or "passport" in name:
+        return User.IDENTIFICATION_PASSPORT
+    return User.IDENTIFICATION_CC
 
 
 def remote_records(data):
@@ -163,12 +187,49 @@ class CompanyApplicationService:
             raise CompanyValidationError("Ya existe una empresa con este NIT.")
         if Company.objects.filter(email=email, archived_at__isnull=True).exists():
             raise CompanyValidationError("Ya existe una empresa con este correo.")
+        if User.objects.filter(email__iexact=email).exists():
+            raise CompanyValidationError("Ya existe un usuario con este correo.")
+        owner_user = User(
+            email=email,
+            username=unique_company_username(email),
+            full_name=f"{str(data['first_name']).strip()} {str(data['last_name']).strip()}".strip(),
+            first_name=str(data["first_name"]).strip(),
+            last_name=str(data["last_name"]).strip(),
+            admin_role=User.ROLE_COMPANY,
+            identification_type=user_identification_type_from_matias(data),
+            identification_number=nit,
+            country="Colombia",
+            department=str(data.get("department_id") or ""),
+            city=str(data.get("city_id") or ""),
+            address=str(data["address"]).strip(),
+            phone_country_code="+57",
+            phone_number=str(data["mobile"]).replace("+57", "")[-10:],
+            is_staff=False,
+            is_superuser=False,
+            is_active=True,
+        )
+        owner_user.set_password(data["password"])
+        owner_user.save()
         company = Company.objects.create(
             legal_name=str(data["company_name"]).strip(),
             nit=nit,
             email=email,
             owner_first_name=str(data["first_name"]).strip(),
             owner_last_name=str(data["last_name"]).strip(),
+            owner_user=owner_user,
+            identity_document_id=str(data.get("identity_document_id") or ""),
+            identity_document_code=str(data.get("identity_document_code") or ""),
+            identity_document_name=str(data.get("identity_document_name") or ""),
+            verification_digit=str(data.get("verification_digit") or ""),
+            organization_type_id=str(data.get("organization_type_id") or ""),
+            organization_type_code=str(data.get("organization_type_code") or ""),
+            organization_type_name=str(data.get("organization_type_name") or ""),
+            accounting_regime_id=str(data.get("accounting_regime_id") or ""),
+            accounting_regime_code=str(data.get("accounting_regime_code") or ""),
+            accounting_regime_name=str(data.get("accounting_regime_name") or ""),
+            fiscal_regime_id=str(data.get("fiscal_regime_id") or ""),
+            fiscal_regime_code=str(data.get("fiscal_regime_code") or ""),
+            fiscal_regime_name=str(data.get("fiscal_regime_name") or ""),
             country_id=str(data["country_id"]),
             department_id=str(data.get("department_id") or ""),
             city_id=str(data["city_id"]),
@@ -205,8 +266,8 @@ class CompanyApplicationService:
             "password": data["password"],
             "password_confirmation": data["password_confirmation"],
             "dni": company.nit,
-            "country_id": data["country_id"],
-            "city_id": data["city_id"],
+            "country_id": int(data["country_id"]),
+            "city_id": int(data["city_id"]),
             "address": company.address,
             "mobile": company.mobile,
             "phone": company.phone,
