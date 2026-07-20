@@ -21,6 +21,16 @@ def normalize_nit(value):
     return "".join(ch for ch in str(value or "").strip().upper() if ch.isalnum())
 
 
+def calculate_nit_verification_digit(value):
+    number = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if not number or len(number) > 15:
+        return ""
+    weights = [71, 67, 59, 53, 47, 43, 41, 37, 29, 23, 19, 17, 13, 7, 3]
+    total = sum(int(digit) * weight for digit, weight in zip(number.zfill(15), weights))
+    remainder = total % 11
+    return str(remainder if remainder in (0, 1) else 11 - remainder)
+
+
 def normalize_email(value):
     return str(value or "").strip().lower()
 
@@ -46,6 +56,10 @@ def user_identification_type_from_matias(data):
     if "pasaporte" in name or "passport" in name:
         return User.IDENTIFICATION_PASSPORT
     return User.IDENTIFICATION_CC
+
+
+def is_matias_nit_document(data):
+    return user_identification_type_from_matias(data) == User.IDENTIFICATION_NIT
 
 
 def remote_records(data):
@@ -220,7 +234,7 @@ class CompanyApplicationService:
             identity_document_id=str(data.get("identity_document_id") or ""),
             identity_document_code=str(data.get("identity_document_code") or ""),
             identity_document_name=str(data.get("identity_document_name") or ""),
-            verification_digit=str(data.get("verification_digit") or ""),
+            verification_digit=calculate_nit_verification_digit(nit) if is_matias_nit_document(data) else "",
             organization_type_id=str(data.get("organization_type_id") or ""),
             organization_type_code=str(data.get("organization_type_code") or ""),
             organization_type_name=str(data.get("organization_type_name") or ""),
