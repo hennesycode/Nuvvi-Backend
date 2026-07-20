@@ -97,7 +97,7 @@ class MatiasConnection(models.Model):
     enabled = models.BooleanField(default=False)
     timeout_seconds = models.PositiveSmallIntegerField(default=20)
     retry_attempts = models.PositiveSmallIntegerField(default=2)
-    token_generation_endpoint = models.CharField(max_length=80, default="/tokens")
+    token_generation_endpoint = models.CharField(max_length=80, default="/auth/token")
 
     auth_method = models.CharField(max_length=20, default="PAT")
     encrypted_access_token = models.TextField(blank=True)

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .matias_service import get_default_url, mask_token, normalize_base_url
+from .matias_service import get_default_token_endpoint, get_default_url, mask_token, normalize_base_url
 from .models import MatiasConnection
 
 
@@ -45,7 +45,7 @@ class MatiasConnectionSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         base_url = normalize_base_url(attrs.get("base_url", getattr(self.instance, "base_url", "")))
         environment = attrs.get("environment", getattr(self.instance, "environment", MatiasConnection.ENVIRONMENT_SANDBOX))
-        token_generation_endpoint = attrs.get("token_generation_endpoint", getattr(self.instance, "token_generation_endpoint", "/tokens"))
+        token_generation_endpoint = attrs.get("token_generation_endpoint", getattr(self.instance, "token_generation_endpoint", get_default_token_endpoint(environment)))
         timeout_seconds = attrs.get("timeout_seconds", getattr(self.instance, "timeout_seconds", 20))
         retry_attempts = attrs.get("retry_attempts", getattr(self.instance, "retry_attempts", 2))
         if not str(base_url).startswith("https://"):

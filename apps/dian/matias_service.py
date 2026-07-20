@@ -47,6 +47,10 @@ def get_default_url(environment):
     return PRODUCTION_URL if environment == MatiasConnection.ENVIRONMENT_PRODUCTION else SANDBOX_URL
 
 
+def get_default_token_endpoint(environment):
+    return "/tokens" if environment == MatiasConnection.ENVIRONMENT_PRODUCTION else "/auth/token"
+
+
 def normalize_base_url(value):
     url = str(value or "").strip().rstrip("/")
     marker = "/api/ubl2.1"
@@ -86,7 +90,7 @@ def get_connection(environment=None):
     name = "MATIAS_PRODUCTION" if environment == MatiasConnection.ENVIRONMENT_PRODUCTION else "MATIAS_SANDBOX"
     connection, _ = MatiasConnection.objects.get_or_create(
         environment=environment,
-        defaults={"name": name, "base_url": get_default_url(environment)},
+        defaults={"name": name, "base_url": get_default_url(environment), "token_generation_endpoint": get_default_token_endpoint(environment)},
     )
     if connection.name != name:
         connection.name = name
