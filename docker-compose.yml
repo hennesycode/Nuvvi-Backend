@@ -11,25 +11,10 @@ services:
       - .:/app
       - static_volume:/app/staticfiles
       - media_volume:/app/media
-    depends_on:
-      redis:
-        condition: service_started
-    networks:
-      - nuvvi-network
-
-  redis:
-    image: redis:7-alpine
-    container_name: nuvvi-redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
     networks:
       - nuvvi-network
 
 volumes:
-  redis_data:
   static_volume:
   media_volume:
 
