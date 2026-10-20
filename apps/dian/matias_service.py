@@ -709,8 +709,33 @@ def generate_pat(connection, *, email, password, token_name, description, expire
 
 def revoke_current_pat(connection, request=None):
     token = decrypt_secret(connection.encrypted_access_token)
-    if not token or not connection.token_external_id:
-        raise ValueError("No hay PAT con ID externo para revocar.")
+    if not token:
+        raise ValueError("No hay un PAT configurado para revocar.")
+    if not connection.token_external_id:
+        token_list = matias_request(connection, "/tokens", token=token)
+        candidates = get_records(token_list.get("data"))
+        if not token_list.get("ok") or not response_success(token_list.get("data")):
+            raise ValueError("MATIAS no permitió consultar los tokens para identificar cuál revocar. Revísalo desde el portal de MATIAS.")
+
+        named = [
+            item for item in candidates
+            if isinstance(item, dict)
+            and item.get("id")
+            and str(item.get("name") or "").strip() == connection.token_name.strip()
+        ]
+        reference = connection.token_expires_at or connection.token_created_at
+        if reference:
+            field = "expires_at" if connection.token_expires_at else "created_at"
+            reference_time = reference.timestamp()
+            named = [
+                item for item in named
+                if (candidate_time := parse_matias_datetime(item.get(field)))
+                and abs(candidate_time.timestamp() - reference_time) <= 300
+            ]
+        if len(named) != 1:
+            raise ValueError("No fue posible identificar de forma única el PAT actual en MATIAS. Por seguridad, revócalo desde el portal de MATIAS.")
+        connection.token_external_id = str(named[0]["id"])
+        connection.save(update_fields=["token_external_id", "updated_at"])
     response = matias_request(connection, f"/tokens/{connection.token_external_id}", method="DELETE", token=token)
     if not response["ok"]:
         write_audit_log(request=request, action="matias_pat_revocacion_error", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_ERROR, message="No se pudo revocar el PAT actual.", error_message=response["error"] or f"HTTP {response['status_code']}")

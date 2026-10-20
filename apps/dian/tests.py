@@ -1,7 +1,9 @@
+from datetime import timedelta
 from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
 from unittest.mock import patch
 
-from .matias_service import CATALOG_ENDPOINTS, extract_generated_pat, get_records, has_data_records, normalize_base_url, sync_catalogs
+from .matias_service import CATALOG_ENDPOINTS, encrypt_secret, extract_generated_pat, get_records, has_data_records, normalize_base_url, revoke_current_pat, sync_catalogs
 from .models import MatiasCatalogSync, MatiasConnection
 from .serializers import MatiasConnectionSerializer, MatiasGeneratePatSerializer, validate_matias_token_name
 
@@ -156,3 +158,56 @@ class MatiasCatalogSynchronizationTests(TestCase):
         self.assertEqual(countries.status, MatiasConnection.CATALOGS_ERROR)
         self.assertEqual(countries.catalog_data, previous_data)
         self.assertEqual(countries.records_count, 1)
+
+
+class MatiasTokenRevocationTests(TestCase):
+    @patch("apps.dian.matias_service.matias_request")
+    def test_resolves_missing_external_id_from_documented_token_list(self, request_mock):
+        created_at = timezone.now()
+        connection = MatiasConnection.objects.create(
+            environment=MatiasConnection.ENVIRONMENT_SANDBOX,
+            base_url="https://sandbox-api.matias-api.com/api/ubl2.1",
+            encrypted_access_token=encrypt_secret("active-pat"),
+            token_name="Nuvvi Sandbox",
+            token_created_at=created_at,
+        )
+        request_mock.side_effect = [
+            {
+                "ok": True,
+                "data": {"success": True, "data": [
+                    {"id": "other-token", "name": "Nuvvi Sandbox", "created_at": (created_at - timedelta(days=1)).isoformat()},
+                    {"id": "current-token", "name": "Nuvvi Sandbox", "created_at": (created_at - timedelta(seconds=5)).isoformat()},
+                ]},
+            },
+            {"ok": True, "status_code": 200, "data": {"success": True}},
+        ]
+
+        revoke_current_pat(connection)
+
+        self.assertEqual(request_mock.call_args_list[0].args[1], "/tokens")
+        self.assertEqual(request_mock.call_args_list[1].args[1], "/tokens/current-token")
+        connection.refresh_from_db()
+        self.assertFalse(connection.encrypted_access_token)
+
+    @patch("apps.dian.matias_service.matias_request")
+    def test_refuses_to_revoke_when_token_identity_is_ambiguous(self, request_mock):
+        created_at = timezone.now()
+        connection = MatiasConnection.objects.create(
+            environment=MatiasConnection.ENVIRONMENT_SANDBOX,
+            base_url="https://sandbox-api.matias-api.com/api/ubl2.1",
+            encrypted_access_token=encrypt_secret("active-pat"),
+            token_name="Nuvvi Sandbox",
+            token_created_at=created_at,
+        )
+        request_mock.return_value = {
+            "ok": True,
+            "data": {"success": True, "data": [
+                {"id": "token-a", "name": "Nuvvi Sandbox", "created_at": created_at.isoformat()},
+                {"id": "token-b", "name": "Nuvvi Sandbox", "created_at": created_at.isoformat()},
+            ]},
+        }
+
+        with self.assertRaisesRegex(ValueError, "de forma única"):
+            revoke_current_pat(connection)
+
+        self.assertEqual(request_mock.call_count, 1)
