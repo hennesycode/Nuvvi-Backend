@@ -1,5 +1,6 @@
 import re
 from uuid import UUID
+from urllib.parse import urlparse
 
 from rest_framework import serializers
 
@@ -66,6 +67,14 @@ class MatiasConnectionSerializer(serializers.ModelSerializer):
         parent_company_uuid = attrs.get("parent_company_uuid", getattr(self.instance, "parent_company_uuid", ""))
         if not str(base_url).startswith("https://"):
             raise serializers.ValidationError({"base_url": "La URL base debe usar HTTPS."})
+        parsed_url = urlparse(base_url)
+        if parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment:
+            raise serializers.ValidationError({"base_url": "La URL base no debe incluir credenciales, parámetros ni fragmentos."})
+        if environment == MatiasConnection.ENVIRONMENT_SANDBOX:
+            if parsed_url.hostname != "sandbox-api.matias-api.com" or not parsed_url.path.rstrip("/").endswith("/api/ubl2.1"):
+                raise serializers.ValidationError({"base_url": "Sandbox debe usar https://sandbox-api.matias-api.com/api/ubl2.1."})
+        elif parsed_url.hostname == "sandbox-api.matias-api.com":
+            raise serializers.ValidationError({"base_url": "Producción requiere la URL productiva entregada por MATIAS; no uses la URL Sandbox."})
         attrs["base_url"] = base_url
         if environment not in dict(MatiasConnection.ENVIRONMENT_CHOICES):
             raise serializers.ValidationError({"environment": "Ambiente inválido."})
@@ -99,7 +108,7 @@ class MatiasGeneratePatSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
     token_name = serializers.CharField(max_length=120)
     description = serializers.CharField(required=False, allow_blank=True, max_length=255)
-    expires_in_days = serializers.IntegerField(min_value=1, max_value=365, default=90)
+    expires_in_days = serializers.IntegerField(min_value=1, max_value=90, default=90)
 
     def validate_token_name(self, value):
         return validate_matias_token_name(value)

@@ -141,7 +141,7 @@ class MatiasConnection(models.Model):
 
     catalogs_status = models.CharField(max_length=20, default=CATALOGS_PENDING)
     catalogs_synced_count = models.PositiveSmallIntegerField(default=0)
-    catalogs_total_count = models.PositiveSmallIntegerField(default=18)
+    catalogs_total_count = models.PositiveSmallIntegerField(default=20)
     catalogs_last_attempt_at = models.DateTimeField(null=True, blank=True)
     catalogs_last_synced_at = models.DateTimeField(null=True, blank=True)
     catalogs_detail = models.JSONField(default=list, blank=True)
@@ -166,6 +166,7 @@ class MatiasCatalogSync(models.Model):
     endpoint = models.CharField(max_length=120)
     status = models.CharField(max_length=20, default=MatiasConnection.CATALOGS_PENDING)
     records_count = models.PositiveIntegerField(null=True, blank=True)
+    catalog_data = models.JSONField(default=list, blank=True)
     last_attempt_at = models.DateTimeField(null=True, blank=True)
     last_success_at = models.DateTimeField(null=True, blank=True)
     http_status = models.PositiveSmallIntegerField(null=True, blank=True)

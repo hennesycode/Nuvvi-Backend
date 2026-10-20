@@ -155,6 +155,10 @@ def fetch_catalogs(environment):
     connection = get_connection(environment)
     catalogs = {}
     for key, endpoint in (("countries", "/countries"), ("departments", "/departments"), ("cities", "/cities"), ("identity_documents", "/identity-documents"), ("organization_types", "/organization-type"), ("accounting_regimes", "/accounting-regime"), ("fiscal_regimes", "/fiscal-regime")):
+        sync = connection.catalog_syncs.filter(endpoint=endpoint).first()
+        if sync and sync.catalog_data:
+            catalogs[key] = sync.catalog_data
+            continue
         response = matias_request(connection, endpoint)
         catalogs[key] = get_records(response["data"]) if response["ok"] else []
     return catalogs

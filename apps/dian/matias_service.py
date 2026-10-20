@@ -27,6 +27,7 @@ CATALOG_ENDPOINTS = [
     ("payment-methods", "Métodos de pago"),
     ("payment-means", "Medios de pago"),
     ("identity-documents", "Tipos de identificación"),
+    ("organization-type", "Tipos de organización"),
     ("fiscal-regime", "Régimen fiscal"),
     ("accounting-regime", "Régimen contable"),
     ("delivery-conditions", "Condiciones de entrega"),
@@ -35,6 +36,7 @@ CATALOG_ENDPOINTS = [
     ("operation-type", "Tipos de operación"),
     ("taxes", "Impuestos"),
     ("quantity-units", "Unidades de medida"),
+    ("type-item-identifications", "Identificación de ítems"),
     ("reference-price", "Precios de referencia"),
     ("cities", "Ciudades"),
     ("departments", "Departamentos"),
@@ -152,7 +154,8 @@ def matias_request(connection, endpoint, *, method="GET", token=None, payload=No
 def get_records(data):
     if not isinstance(data, dict):
         return []
-    records = data.get("dataRecords", {}).get("data")
+    data_records = data.get("dataRecords")
+    records = data_records.get("data") if isinstance(data_records, dict) else None
     if isinstance(records, list):
         return records
     records = data.get("data")
@@ -160,7 +163,12 @@ def get_records(data):
 
 
 def has_data_records(data):
-    return isinstance(data, dict) and isinstance(data.get("dataRecords", {}).get("data"), list)
+    if isinstance(data, list):
+        return True
+    if not isinstance(data, dict):
+        return False
+    data_records = data.get("dataRecords")
+    return (isinstance(data_records, dict) and isinstance(data_records.get("data"), list)) or isinstance(data.get("data"), list)
 
 
 def response_success(data):
@@ -366,7 +374,7 @@ def run_connection_test(connection, request=None):
             results.append(diagnostic("Empresa", company_response, ok=False, detail=last_error or "Pendiente de PAT válido."))
 
         customers = matias_request(connection, "/company/customers", token=token)
-        if pat_ok and customers["ok"]:
+        if pat_ok and customers["ok"] and response_success(customers["data"]) and has_data_records(customers["data"]):
             data = get_records(customers["data"])
             connection.linked_companies_count = len(data) if isinstance(data, list) else connection.linked_companies_count
             connection.multicompany_verified = True
@@ -416,10 +424,10 @@ def run_connection_test(connection, request=None):
 
         detected = (auth.get("headers", {}).get("X-MATIAS-Environment") or "").lower()
         connection.environment_detected = detected
-        if connection.environment == MatiasConnection.ENVIRONMENT_SANDBOX and detected and detected != connection.environment:
+        if (connection.environment == MatiasConnection.ENVIRONMENT_SANDBOX and detected != connection.environment) or (detected and detected != connection.environment):
             status = MatiasConnection.STATUS_ENVIRONMENT_MISMATCH
             environment_ok = False
-            last_error = f"Ambiente detectado {detected}, configurado {connection.environment}."
+            last_error = f"Ambiente detectado {detected or 'no informado'}, configurado {connection.environment}."
             results.append({"label": "Ambiente", "endpoint": "/auth/user", "http_status": auth.get("status_code"), "response_time_ms": auth.get("response_time_ms"), "status": "error", "detail": last_error})
         else:
             results.append({"label": "Ambiente", "endpoint": "/auth/user", "http_status": auth.get("status_code"), "response_time_ms": auth.get("response_time_ms"), "status": "success", "detail": detected or connection.environment})
@@ -430,11 +438,11 @@ def run_connection_test(connection, request=None):
     elif status not in (MatiasConnection.STATUS_DISABLED, MatiasConnection.STATUS_NOT_CONFIGURED, MatiasConnection.STATUS_AUTHENTICATION_ERROR, MatiasConnection.STATUS_API_UNAVAILABLE, MatiasConnection.STATUS_TIMEOUT, MatiasConnection.STATUS_CONFIGURATION_ERROR, MatiasConnection.STATUS_ENVIRONMENT_MISMATCH):
         status = MatiasConnection.STATUS_CONNECTED if server_ok and pat_ok else MatiasConnection.STATUS_AUTHENTICATION_ERROR
     technical_connected = server_ok and environment_ok and pat_ok
-    if technical_connected:
+    if connection.enabled and technical_connected:
         status = MatiasConnection.STATUS_CONNECTED
-    if technical_connected and uuid_ok and multicompany_ok and membership_ok and connection.catalogs_status == MatiasConnection.CATALOGS_SYNCED:
+    if connection.enabled and technical_connected and uuid_ok and multicompany_ok and membership_ok and connection.catalogs_status == MatiasConnection.CATALOGS_SYNCED:
         operational = MatiasConnection.OP_READY
-    elif technical_connected and not uuid_ok:
+    elif connection.enabled and technical_connected and not uuid_ok:
         operational = MatiasConnection.OP_PARENT_UUID_REQUIRED
     elif connection.catalogs_status == MatiasConnection.CATALOGS_PARTIAL:
         operational = MatiasConnection.OP_CATALOGS_PARTIAL
@@ -488,23 +496,25 @@ def sync_catalogs(connection, request=None):
         data = get_records(response["data"])
         valid = response["ok"] and response_success(response["data"]) and has_data_records(response["data"])
         count = len(data) if isinstance(data, list) else None
+        valid = valid and count is not None and count > 0
         item_status = "Sincronizado" if valid else "Error"
         if valid:
             synced += 1
         sync, _ = MatiasCatalogSync.objects.get_or_create(connection=connection, endpoint=f"/{endpoint}", defaults={"catalog_name": label})
         sync.catalog_name = label
         sync.status = MatiasConnection.CATALOGS_SYNCED if valid else MatiasConnection.CATALOGS_ERROR
-        sync.records_count = count
         sync.last_attempt_at = attempted_at
         if valid:
+            sync.records_count = count
+            sync.catalog_data = data
             sync.last_success_at = attempted_at
             sync.error_message = ""
         else:
-            sync.error_message = response["error"] or "Respuesta de catálogo inválida."
+            sync.error_message = response["error"] or ("El catálogo respondió sin registros." if count == 0 else "Respuesta de catálogo inválida.")
         sync.http_status = response["status_code"] or None
         sync.response_time_ms = response["response_time_ms"]
         sync.save()
-        details.append({"endpoint": f"/{endpoint}", "name": label, "records": count, "status": item_status, "last_attempt_at": attempted_at.isoformat(), "last_synced_at": sync.last_success_at.isoformat() if sync.last_success_at else "", "http_status": sync.http_status, "response_time_ms": sync.response_time_ms, "error": "" if valid else sync.error_message})
+        details.append({"endpoint": f"/{endpoint}", "name": label, "records": sync.records_count, "status": item_status, "last_attempt_at": attempted_at.isoformat(), "last_synced_at": sync.last_success_at.isoformat() if sync.last_success_at else "", "http_status": sync.http_status, "response_time_ms": sync.response_time_ms, "error": "" if valid else sync.error_message})
 
     connection.catalogs_total_count = len(CATALOG_ENDPOINTS)
     connection.catalogs_synced_count = synced
@@ -596,8 +606,13 @@ def generate_pat(connection, *, email, password, token_name, description, expire
             write_audit_log(request=request, action="matias_pat_generacion_fallida", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_ERROR, message="MATIAS no pudo crear el PAT.", error_message=message or f"HTTP {token_response['status_code']}", metadata={**metadata, "error_code": "PAT_CREATION_FAILED"})
             raise ValueError(message or "MATIAS no pudo crear el PAT.")
 
-        data = token_response["data"].get("data", token_response["data"])
-        pat = data.get("accessToken") or data.get("plain_text_token") or data.get("access_token") or data.get("token")
+        response_data = token_response["data"]
+        data = response_data.get("data") if isinstance(response_data.get("data"), dict) else response_data
+        pat = (
+            data.get("accessToken") or data.get("plain_text_token")
+            or data.get("access_token") or data.get("token")
+            or response_data.get("token")
+        )
         if not pat:
             write_audit_log(request=request, action="matias_pat_generacion_fallida", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_ERROR, message="MATIAS creó el PAT pero no devolvió data.accessToken.", error_message="Respuesta exitosa sin data.accessToken.", metadata={**metadata, "error_code": "PAT_ACCESS_TOKEN_MISSING"})
             raise ValueError("MATIAS respondió exitosamente, pero no devolvió data.accessToken.")

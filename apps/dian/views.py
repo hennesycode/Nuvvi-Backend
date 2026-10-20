@@ -6,7 +6,7 @@ from rest_framework.views import APIView
 from apps.audit.models import AuditLog
 from apps.audit.services import write_audit_log
 
-from .matias_service import generate_pat, get_connection, is_token_expired, revoke_current_pat, run_connection_test, store_validated_pat, sync_catalogs
+from .matias_service import CATALOG_ENDPOINTS, generate_pat, get_connection, is_token_expired, revoke_current_pat, run_connection_test, store_validated_pat, sync_catalogs
 from .models import MatiasConnection
 from .serializers import MatiasConnectionSerializer, MatiasGeneratePatSerializer, MatiasTokenSerializer
 
@@ -160,6 +160,39 @@ class MatiasSyncCatalogsView(APIView):
     def post(self, request):
         connection = sync_catalogs(get_connection(request_environment(request)), request=request)
         return Response(MatiasConnectionSerializer(connection).data)
+
+
+class MatiasCatalogDataView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        connection = get_connection(request_environment(request))
+        catalog_key = request.query_params.get("catalog")
+        catalog_endpoints = {f"/{endpoint}" for endpoint, _ in CATALOG_ENDPOINTS}
+        if catalog_key:
+            endpoint = f"/{catalog_key.strip('/')}"
+            if endpoint not in catalog_endpoints:
+                return Response({"detail": "Catálogo MATIAS no reconocido."}, status=status.HTTP_404_NOT_FOUND)
+            sync = connection.catalog_syncs.filter(endpoint=endpoint).first()
+            if not sync or not sync.catalog_data or not sync.last_success_at:
+                return Response({"detail": "El catálogo aún no está sincronizado correctamente."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"environment": connection.environment, "endpoint": endpoint, "name": sync.catalog_name, "status": sync.status, "error_message": sync.error_message, "records_count": len(sync.catalog_data), "last_synced_at": sync.last_success_at, "results": sync.catalog_data})
+
+        syncs = {item.endpoint: item for item in connection.catalog_syncs.all()}
+        return Response({
+            "environment": connection.environment,
+            "results": [
+                {
+                    "key": endpoint,
+                    "endpoint": f"/{endpoint}",
+                    "name": label,
+                    "status": syncs[f"/{endpoint}"].status if f"/{endpoint}" in syncs else MatiasConnection.CATALOGS_PENDING,
+                    "records_count": syncs[f"/{endpoint}"].records_count if f"/{endpoint}" in syncs else None,
+                    "last_synced_at": syncs[f"/{endpoint}"].last_success_at if f"/{endpoint}" in syncs else None,
+                }
+                for endpoint, label in CATALOG_ENDPOINTS
+            ],
+        })
 
 
 class MatiasRevokeTokenView(APIView):
