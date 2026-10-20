@@ -35,7 +35,7 @@ class MatiasDocumentationContractTests(SimpleTestCase):
         self.assertEqual(len(CATALOG_ENDPOINTS), 20)
         self.assertTrue({"organization-type", "type-item-identifications", "taxes", "quantity-units"}.issubset(endpoints))
 
-    def test_pat_expiration_defaults_to_one_year_and_rejects_more(self):
+    def test_pat_expiration_defaults_to_90_days_and_rejects_more(self):
         self.assertEqual(validate_matias_token_name("  Nuvvi Sandbox  "), "Nuvvi Sandbox")
         default_serializer = MatiasGeneratePatSerializer(data={
             "email": "admin@example.com",
@@ -43,13 +43,13 @@ class MatiasDocumentationContractTests(SimpleTestCase):
             "token_name": "Nuvvi Sandbox",
         })
         self.assertTrue(default_serializer.is_valid(), default_serializer.errors)
-        self.assertEqual(default_serializer.validated_data["expires_in_days"], 365)
+        self.assertEqual(default_serializer.validated_data["expires_in_days"], 90)
 
         maximum_serializer = MatiasGeneratePatSerializer(data={
             "email": "admin@example.com",
             "password": "not-saved",
             "token_name": "Nuvvi Sandbox",
-            "expires_in_days": 365,
+            "expires_in_days": 90,
         })
         self.assertTrue(maximum_serializer.is_valid(), maximum_serializer.errors)
 
@@ -57,7 +57,7 @@ class MatiasDocumentationContractTests(SimpleTestCase):
             "email": "admin@example.com",
             "password": "not-saved",
             "token_name": "Nuvvi Sandbox",
-            "expires_in_days": 366,
+            "expires_in_days": 91,
         })
 
         self.assertFalse(out_of_range_serializer.is_valid())

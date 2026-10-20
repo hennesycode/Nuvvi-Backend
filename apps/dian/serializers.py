@@ -108,7 +108,7 @@ class MatiasGeneratePatSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
     token_name = serializers.CharField(max_length=120)
     description = serializers.CharField(required=False, allow_blank=True, max_length=255)
-    expires_in_days = serializers.IntegerField(min_value=1, max_value=365, default=365)
+    expires_in_days = serializers.IntegerField(min_value=1, max_value=90, default=90)
 
     def validate_token_name(self, value):
         return validate_matias_token_name(value)
