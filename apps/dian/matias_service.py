@@ -152,14 +152,23 @@ def matias_request(connection, endpoint, *, method="GET", token=None, payload=No
 
 
 def get_records(data):
+    if isinstance(data, list):
+        return data
     if not isinstance(data, dict):
         return []
     data_records = data.get("dataRecords")
     records = data_records.get("data") if isinstance(data_records, dict) else None
     if isinstance(records, list):
         return records
-    records = data.get("data")
-    return records if isinstance(records, list) else []
+    for key in ("data", "customers", "results"):
+        records = data.get(key)
+        if isinstance(records, list):
+            return records
+        if isinstance(records, dict):
+            nested = get_records(records)
+            if nested:
+                return nested
+    return []
 
 
 def has_data_records(data):
@@ -168,7 +177,15 @@ def has_data_records(data):
     if not isinstance(data, dict):
         return False
     data_records = data.get("dataRecords")
-    return (isinstance(data_records, dict) and isinstance(data_records.get("data"), list)) or isinstance(data.get("data"), list)
+    if isinstance(data_records, dict) and isinstance(data_records.get("data"), list):
+        return True
+    for key in ("data", "customers", "results"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return True
+        if isinstance(value, dict) and has_data_records(value):
+            return True
+    return False
 
 
 def response_success(data):
@@ -420,11 +437,23 @@ def run_connection_test(connection, request=None):
         customers = matias_request(connection, "/company/customers", token=token)
         if pat_ok and customers["ok"] and response_success(customers["data"]) and has_data_records(customers["data"]):
             data = get_records(customers["data"])
-            connection.linked_companies_count = len(data) if isinstance(data, list) else connection.linked_companies_count
+            parent_nit = str(connection.external_company_nit or "").strip()
+            parent_uuid = str(connection.parent_company_uuid or "").strip()
+            linked = [
+                item for item in data
+                if not (
+                    isinstance(item, dict)
+                    and (
+                        str(item.get("client_uuid") or item.get("uuid") or item.get("company_uuid") or "").strip() == parent_uuid
+                        or (parent_nit and str(item.get("dni") or item.get("nit") or item.get("identification_number") or "").strip() == parent_nit)
+                    )
+                )
+            ]
+            connection.linked_companies_count = len(linked)
             connection.multicompany_verified = True
             multicompany_ok = True
             operational = MatiasConnection.OP_MULTICOMPANY_VERIFIED
-            results.append(diagnostic("Multiempresa", customers, detail="Puede consultar empresas vinculadas."))
+            results.append(diagnostic("Multiempresa", customers, detail=f"Listado de empresas cliente accesible: {len(linked)} empresa(s) en MATIAS."))
         else:
             connection.multicompany_verified = False
             if pat_ok:

@@ -17,6 +17,12 @@ class MatiasDocumentationContractTests(SimpleTestCase):
         self.assertFalse(has_data_records({"dataRecords": []}))
         self.assertEqual(get_records({"dataRecords": "invalid"}), [])
 
+    def test_list_envelopes_are_extracted_for_company_sync(self):
+        payload = {"success": True, "data": {"customers": [{"client_uuid": "client-1"}]}}
+
+        self.assertTrue(has_data_records(payload))
+        self.assertEqual(get_records(payload), [{"client_uuid": "client-1"}])
+
     def test_base_url_is_normalized_to_matias_api_root(self):
         self.assertEqual(
             normalize_base_url("https://sandbox-api.matias-api.com/api/ubl2.1/invoices/"),
@@ -29,17 +35,33 @@ class MatiasDocumentationContractTests(SimpleTestCase):
         self.assertEqual(len(CATALOG_ENDPOINTS), 20)
         self.assertTrue({"organization-type", "type-item-identifications", "taxes", "quantity-units"}.issubset(endpoints))
 
-    def test_pat_name_and_documented_expiration_limits(self):
+    def test_pat_expiration_defaults_to_one_year_and_rejects_more(self):
         self.assertEqual(validate_matias_token_name("  Nuvvi Sandbox  "), "Nuvvi Sandbox")
-        serializer = MatiasGeneratePatSerializer(data={
+        default_serializer = MatiasGeneratePatSerializer(data={
             "email": "admin@example.com",
             "password": "not-saved",
             "token_name": "Nuvvi Sandbox",
-            "expires_in_days": 91,
+        })
+        self.assertTrue(default_serializer.is_valid(), default_serializer.errors)
+        self.assertEqual(default_serializer.validated_data["expires_in_days"], 365)
+
+        maximum_serializer = MatiasGeneratePatSerializer(data={
+            "email": "admin@example.com",
+            "password": "not-saved",
+            "token_name": "Nuvvi Sandbox",
+            "expires_in_days": 365,
+        })
+        self.assertTrue(maximum_serializer.is_valid(), maximum_serializer.errors)
+
+        out_of_range_serializer = MatiasGeneratePatSerializer(data={
+            "email": "admin@example.com",
+            "password": "not-saved",
+            "token_name": "Nuvvi Sandbox",
+            "expires_in_days": 366,
         })
 
-        self.assertFalse(serializer.is_valid())
-        self.assertIn("expires_in_days", serializer.errors)
+        self.assertFalse(out_of_range_serializer.is_valid())
+        self.assertIn("expires_in_days", out_of_range_serializer.errors)
 
     def test_pat_extraction_matches_sandbox_quickstart_response(self):
         payload = {

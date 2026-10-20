@@ -154,15 +154,12 @@ class CompanyReconcileView(APIView):
 
     def post(self, request):
         service = CompanyApplicationService(user=request.user, request=request, environment=environment_from_request(request))
-        updated = 0
-        errors = 0
-        for company in Company.objects.filter(archived_at__isnull=True):
-            try:
-                service.sync_company(company)
-                updated += 1
-            except CompanyValidationError:
-                errors += 1
-        return Response({"updated": updated, "errors": errors})
+        try:
+            service.ensure_ready()
+            result = service.synchronize_remote_companies()
+        except CompanyValidationError as exc:
+            return validation_error_response(exc)
+        return Response(result)
 
 
 class CompanyCatalogsView(APIView):
