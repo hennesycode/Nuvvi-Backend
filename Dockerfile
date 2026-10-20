@@ -16,7 +16,7 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY . .
 
-RUN chmod +x /app/entrypoint.sh && mkdir -p /app/logs /app/media /app/staticfiles
+RUN chmod +x /app/entrypoint.sh && mkdir -p /app/media /app/staticfiles
 
 EXPOSE 8000
 
