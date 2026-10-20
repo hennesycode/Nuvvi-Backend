@@ -104,7 +104,7 @@ class CompanyProviderLink(models.Model):
         (STATUS_REGISTERED, "Registrada"),
         (STATUS_PENDING_UPDATE, "Actualización pendiente"),
         (STATUS_SYNC_ERROR, "Error de sincronización"),
-        (STATUS_REMOTE_CREATED_IDENTIFIERS_PENDING, "Identificadores MATIAS pendientes"),
+        (STATUS_REMOTE_CREATED_IDENTIFIERS_PENDING, "Identificadores pendientes del proveedor"),
         (STATUS_REMOTE_DISABLED, "Desactivada en proveedor"),
         (STATUS_DELETION_PENDING, "Desactivación pendiente"),
         (STATUS_REMOTE_NOT_FOUND, "No encontrada en proveedor"),

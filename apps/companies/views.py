@@ -5,10 +5,11 @@ from rest_framework.views import APIView
 
 from apps.dian.models import MatiasConnection
 from apps.dian.views import IsSuperAdmin
+from apps.accounts.models import User
 
-from .models import Company
+from .models import Company, CompanySyncAttempt
 from .serializers import CompanyCreateSerializer, CompanySerializer, CompanySettingSerializer, CompanyUpdateSerializer, fetch_catalogs
-from .services import CompanyApplicationService, CompanyValidationError, search_companies
+from .services import CompanyApplicationService, CompanyValidationError, normalize_email, normalize_nit, search_companies
 
 
 def environment_from_request(request):
@@ -99,7 +100,10 @@ class CompanyArchiveView(APIView):
     permission_classes = [IsSuperAdmin]
 
     def post(self, request, pk):
-        company = CompanyApplicationService(user=request.user, request=request, environment=environment_from_request(request)).archive_company(get_object_or_404(Company, pk=pk))
+        try:
+            company = CompanyApplicationService(user=request.user, request=request, environment=environment_from_request(request)).archive_company(get_object_or_404(Company, pk=pk))
+        except CompanyValidationError as exc:
+            return validation_error_response(exc)
         return Response(CompanySerializer(company, context={"environment": environment_from_request(request)}).data)
 
 
@@ -147,6 +151,29 @@ class CompanyProviderSyncStatusView(APIView):
             "linked_companies_count": connection.linked_companies_count if connection else 0,
             "ready": bool(connection and connection.operational_status == MatiasConnection.OP_READY),
         })
+
+
+class CompanyIdentityCheckView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        environment = environment_from_request(request)
+        nit = normalize_nit(request.query_params.get("nit"))
+        email = normalize_email(request.query_params.get("email"))
+        retry_id = str(request.query_params.get("request_id") or "")
+        retry_attempt = CompanySyncAttempt.objects.filter(request_identifier=retry_id, operation="CREATE", company__isnull=False).select_related("company").first() if retry_id else None
+        retry_company = retry_attempt.company if retry_attempt and retry_attempt.company.environment == environment and retry_attempt.company.nit == nit and retry_attempt.company.email.lower() == email else None
+        companies_by_nit = Company.objects.filter(environment=environment, nit=nit) if nit else Company.objects.none()
+        companies_by_email = Company.objects.filter(environment=environment, email__iexact=email) if email else Company.objects.none()
+        users_by_email = User.objects.filter(email__iexact=email) if email else User.objects.none()
+        if retry_company:
+            companies_by_nit = companies_by_nit.exclude(pk=retry_company.pk)
+            companies_by_email = companies_by_email.exclude(pk=retry_company.pk)
+            if retry_company.owner_user_id:
+                users_by_email = users_by_email.exclude(pk=retry_company.owner_user_id)
+        nit_exists = bool(nit and companies_by_nit.exists())
+        email_exists = bool(email and (companies_by_email.exists() or users_by_email.exists()))
+        return Response({"nit_exists": nit_exists, "email_exists": email_exists})
 
 
 class CompanyReconcileView(APIView):

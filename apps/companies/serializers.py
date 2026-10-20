@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from apps.dian.matias_service import get_connection, get_records, matias_request
 from apps.dian.models import MatiasConnection
+from apps.accounts.models import User
 
 from .models import Company, CompanyProviderLink, CompanySyncAttempt
 from .services import normalize_email, normalize_nit, remote_records
@@ -76,6 +77,28 @@ class CompanyCreateSerializer(serializers.Serializer):
         attrs["email"] = normalize_email(attrs["email"])
         if not attrs["nit"] or not attrs["nit"].isdigit():
             raise serializers.ValidationError({"nit": "La identificación debe contener solo números."})
+        prior_attempt = CompanySyncAttempt.objects.filter(
+            request_identifier=attrs["request_id"], operation="CREATE", company__isnull=False,
+        ).select_related("company", "company__owner_user").first()
+        retry_company = prior_attempt.company if prior_attempt else None
+        retrying_same_company = bool(
+            retry_company
+            and retry_company.environment == attrs["environment"]
+            and retry_company.nit == attrs["nit"]
+            and retry_company.email.lower() == attrs["email"]
+        )
+        nit_matches = Company.objects.filter(environment=attrs["environment"], nit=attrs["nit"])
+        email_matches = Company.objects.filter(environment=attrs["environment"], email__iexact=attrs["email"])
+        user_matches = User.objects.filter(email__iexact=attrs["email"])
+        if retrying_same_company:
+            nit_matches = nit_matches.exclude(pk=retry_company.pk)
+            email_matches = email_matches.exclude(pk=retry_company.pk)
+            if retry_company.owner_user_id:
+                user_matches = user_matches.exclude(pk=retry_company.owner_user_id)
+        if nit_matches.exists():
+            raise serializers.ValidationError({"nit": "Ya existe una empresa con esta identificación en este ambiente."})
+        if email_matches.exists() or user_matches.exists():
+            raise serializers.ValidationError({"email": "Ya existe una empresa o usuario con este correo."})
         if attrs.get("verification_digit") and not str(attrs["verification_digit"]).isdigit():
             raise serializers.ValidationError({"verification_digit": "El dígito de verificación debe ser numérico."})
         if not str(attrs.get("mobile", "")).startswith("+57") or len(str(attrs.get("mobile", "")).replace("+57", "")) != 10:
@@ -95,19 +118,19 @@ class CompanyCreateSerializer(serializers.Serializer):
         accounting_regimes = {str(item.get("id") or "") for item in catalogs["accounting_regimes"]}
         fiscal_regimes = {str(item.get("id") or "") for item in catalogs["fiscal_regimes"]}
         if countries and str(attrs["country_id"]) not in countries:
-            raise serializers.ValidationError({"country_id": "El país no existe en el catálogo MATIAS sincronizado."})
+            raise serializers.ValidationError({"country_id": "El país no existe en el catálogo del proveedor sincronizado."})
         if attrs.get("department_id") and departments and str(attrs["department_id"]) not in departments:
-            raise serializers.ValidationError({"department_id": "El departamento no existe en el catálogo MATIAS sincronizado."})
+            raise serializers.ValidationError({"department_id": "El departamento no existe en el catálogo del proveedor sincronizado."})
         if cities and str(attrs["city_id"]) not in cities:
-            raise serializers.ValidationError({"city_id": "La ciudad no existe en el catálogo MATIAS sincronizado."})
+            raise serializers.ValidationError({"city_id": "La ciudad no existe en el catálogo del proveedor sincronizado."})
         if identity_documents and str(attrs["identity_document_id"]) not in identity_documents:
-            raise serializers.ValidationError({"identity_document_id": "El tipo de identificación no existe en el catálogo MATIAS."})
+            raise serializers.ValidationError({"identity_document_id": "El tipo de identificación no existe en el catálogo del proveedor."})
         if organization_types and str(attrs["organization_type_id"]) not in organization_types:
-            raise serializers.ValidationError({"organization_type_id": "El tipo de contribuyente no existe en el catálogo MATIAS."})
+            raise serializers.ValidationError({"organization_type_id": "El tipo de contribuyente no existe en el catálogo del proveedor."})
         if accounting_regimes and str(attrs["accounting_regime_id"]) not in accounting_regimes:
-            raise serializers.ValidationError({"accounting_regime_id": "El régimen contable no existe en el catálogo MATIAS."})
+            raise serializers.ValidationError({"accounting_regime_id": "El régimen contable no existe en el catálogo del proveedor."})
         if fiscal_regimes and str(attrs["fiscal_regime_id"]) not in fiscal_regimes:
-            raise serializers.ValidationError({"fiscal_regime_id": "La responsabilidad fiscal no existe en el catálogo MATIAS."})
+            raise serializers.ValidationError({"fiscal_regime_id": "La responsabilidad fiscal no existe en el catálogo del proveedor."})
         selected_city = next((item for item in catalogs["cities"] if str(item.get("id") or item.get("value") or item.get("code") or item.get("uuid") or "") == str(attrs["city_id"])), None)
         department_value = (selected_city or {}).get("department")
         if isinstance(department_value, dict):

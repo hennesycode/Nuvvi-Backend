@@ -152,13 +152,13 @@ class CompanyApplicationService:
 
     def ensure_ready(self):
         if not self.connection.enabled:
-            raise CompanyValidationError("La conexión MATIAS está desactivada.")
+            raise CompanyValidationError("La conexión con el proveedor está desactivada.")
         if self.connection.operational_status != MatiasConnection.OP_READY:
-            raise CompanyValidationError("La conexión MATIAS aún no tiene verificados el acceso multiempresa y los catálogos necesarios.")
+            raise CompanyValidationError("La conexión con el proveedor aún no tiene verificados el acceso multiempresa y los catálogos necesarios.")
         if not self.connection.parent_company_uuid:
-            raise CompanyValidationError("No hay UUID principal de MATIAS configurado.")
+            raise CompanyValidationError("No hay un identificador principal del proveedor configurado.")
         if not self.client.token:
-            raise CompanyValidationError("No hay PAT válido configurado para MATIAS.")
+            raise CompanyValidationError("No hay una credencial válida configurada para el proveedor.")
 
     def record_attempt(self, *, company=None, operation, request_id=None, response=None, endpoint="", method="", successful=False, error_code="", error_message=""):
         values = {
@@ -204,7 +204,7 @@ class CompanyApplicationService:
         response = self.client.list_companies()
         self.record_attempt(operation="LIST_CUSTOMERS", response=response, method="GET", successful=response["ok"])
         if not response["ok"] or not response_success(response["data"]) or not has_data_records(response["data"]):
-            raise CompanyValidationError(response.get("error") or "MATIAS no devolvió un listado válido de empresas cliente.")
+            raise CompanyValidationError(response.get("error") or "El proveedor no devolvió un listado válido de empresas cliente.")
 
         remote_companies = []
         for item in remote_records(response["data"]):
@@ -300,9 +300,9 @@ class CompanyApplicationService:
 
         nit = normalize_nit(data["nit"])
         email = normalize_email(data["email"])
-        if Company.objects.filter(environment=self.connection.environment, nit=nit, archived_at__isnull=True).exists():
+        if Company.objects.filter(environment=self.connection.environment, nit=nit).exists():
             raise CompanyValidationError("Ya existe una empresa con este NIT.")
-        if Company.objects.filter(environment=self.connection.environment, email=email, archived_at__isnull=True).exists():
+        if Company.objects.filter(environment=self.connection.environment, email=email).exists():
             raise CompanyValidationError("Ya existe una empresa con este correo.")
         if User.objects.filter(email__iexact=email).exists():
             raise CompanyValidationError("Ya existe un usuario con este correo.")
@@ -376,9 +376,9 @@ class CompanyApplicationService:
         email = normalize_email(data["email"])
         remote, list_response = self.find_remote_match(nit=nit, email=email)
         if not list_response["ok"]:
-            raise CompanyValidationError(list_response.get("error") or "No fue posible verificar empresas existentes en MATIAS antes de crear.")
+            raise CompanyValidationError(list_response.get("error") or "No fue posible verificar empresas existentes en el proveedor antes de crear.")
         company, link, reused = self.create_local_company(data=data, request_id=request_id)
-        if reused:
+        if reused and link and link.matias_client_uuid and link.provider_status == CompanyProviderLink.STATUS_REGISTERED:
             return company
         if remote:
             self.update_link_from_remote(link, remote)
@@ -400,7 +400,7 @@ class CompanyApplicationService:
             "phone": company.phone,
         }
         response = self.client.create_company(parent_uuid=self.connection.parent_company_uuid, payload=payload)
-        success = response["ok"]
+        success = response["ok"] and response_success(response.get("data"))
         self.record_attempt(company=company, operation="CREATE", request_id=request_id, response=response, method="POST", successful=success, error_code=str(response.get("status_code") or ""))
         remote = self.recover_remote_company(nit=nit, email=email)
         if remote:
@@ -408,12 +408,12 @@ class CompanyApplicationService:
             if link.matias_client_uuid:
                 detail = self.client.get_company(client_uuid=link.matias_client_uuid)
                 self.record_attempt(company=company, operation="VERIFY", response=detail, method="GET", successful=detail["ok"])
-            write_audit_log(request=self.request, action="empresa_creada_matias", entity="Company", entity_id=company.id, status=AuditLog.STATUS_SUCCESS, message="Empresa creada y sincronizada con MATIAS.", metadata={"environment": self.connection.environment, "provider_status": link.provider_status})
+            write_audit_log(request=self.request, action="empresa_sincronizada_proveedor", entity="Company", entity_id=company.id, status=AuditLog.STATUS_SUCCESS, message="Empresa creada y sincronizada con el proveedor.", metadata={"environment": self.connection.environment, "provider_status": link.provider_status})
             return company
         if not success and response.get("error_type") != "TIMEOUT" and response.get("status_code") not in (500, 502, 503, 504):
             link.provider_status = CompanyProviderLink.STATUS_SYNC_ERROR
-            link.last_error_code = str(response.get("status_code") or "MATIAS_ERROR")
-            link.last_error_message = response.get("error") or "MATIAS rechazó la creación."
+            link.last_error_code = str(response.get("status_code") or "PROVIDER_ERROR")
+            link.last_error_message = response.get("error") or "El proveedor rechazó la creación."
             link.save()
             raise CompanyValidationError(link.last_error_message)
 
@@ -421,7 +421,7 @@ class CompanyApplicationService:
             link.provider_status = CompanyProviderLink.STATUS_REMOTE_CREATED_IDENTIFIERS_PENDING if success else CompanyProviderLink.STATUS_SYNC_ERROR
             link.last_sync_at = timezone.now()
             link.last_error_code = "REMOTE_NOT_FOUND_AFTER_CREATE"
-            link.last_error_message = "MATIAS aceptó o dejó incierta la creación, pero aún no devolvió ID o UUID. Use sincronizar para reconciliar."
+            link.last_error_message = "El proveedor aceptó o dejó incierta la creación, pero aún no devolvió sus identificadores. Usa sincronizar para reconciliar."
             link.save()
             return company
         return company
@@ -444,7 +444,7 @@ class CompanyApplicationService:
             link.provider_status = CompanyProviderLink.STATUS_REMOTE_NOT_FOUND if response["ok"] else CompanyProviderLink.STATUS_SYNC_ERROR
             link.last_sync_at = timezone.now()
             link.last_error_code = str(response.get("status_code") or "REMOTE_NOT_FOUND")
-            link.last_error_message = response.get("error") or "La empresa no fue encontrada en MATIAS."
+            link.last_error_message = response.get("error") or "La empresa no fue encontrada en el proveedor."
             link.save()
             return company
         self.update_link_from_remote(link, remote)
@@ -453,12 +453,12 @@ class CompanyApplicationService:
     def update_company(self, company, *, data):
         link = company.provider_links.filter(provider=CompanyProviderLink.PROVIDER_MATIAS, environment=self.connection.environment).first()
         if not link or not link.matias_company_id or not link.matias_client_uuid:
-            raise CompanyValidationError("La empresa no tiene identificadores MATIAS completos para editar.")
+            raise CompanyValidationError("La empresa no tiene identificadores completos del proveedor para editar.")
         new_nit = normalize_nit(data.get("nit", company.nit))
         new_email = normalize_email(data.get("email", company.email))
-        if Company.objects.filter(environment=self.connection.environment, nit=new_nit, archived_at__isnull=True).exclude(id=company.id).exists():
+        if Company.objects.filter(environment=self.connection.environment, nit=new_nit).exclude(id=company.id).exists():
             raise CompanyValidationError("Ya existe una empresa con este NIT.")
-        if Company.objects.filter(environment=self.connection.environment, email=new_email, archived_at__isnull=True).exclude(id=company.id).exists():
+        if Company.objects.filter(environment=self.connection.environment, email=new_email).exclude(id=company.id).exists():
             raise CompanyValidationError("Ya existe una empresa con este correo.")
         previous = {"legal_name": company.legal_name, "nit": company.nit, "email": company.email}
         link.provider_status = CompanyProviderLink.STATUS_PENDING_UPDATE
@@ -468,8 +468,8 @@ class CompanyApplicationService:
         self.record_attempt(company=company, operation="UPDATE", response=response, method="PUT", successful=response["ok"])
         if not response["ok"]:
             link.provider_status = CompanyProviderLink.STATUS_SYNC_ERROR
-            link.last_error_code = str(response.get("status_code") or "MATIAS_ERROR")
-            link.last_error_message = response.get("error") or "MATIAS rechazó la actualización."
+            link.last_error_code = str(response.get("status_code") or "PROVIDER_ERROR")
+            link.last_error_message = response.get("error") or "El proveedor rechazó la actualización."
             link.save()
             raise CompanyValidationError(link.last_error_message)
         company.legal_name = payload["name"]
@@ -482,24 +482,48 @@ class CompanyApplicationService:
         detail = self.client.get_company(client_uuid=link.matias_client_uuid)
         remote = extract_remote_company(detail["data"]) if detail["ok"] else {"id": link.matias_company_id, "client_uuid": link.matias_client_uuid, "name": company.legal_name, "nit": company.nit, "email": company.email, "enabled": link.enabled_in_provider, "raw": {}}
         self.update_link_from_remote(link, remote)
-        write_audit_log(request=self.request, action="empresa_actualizada_matias", entity="Company", entity_id=company.id, status=AuditLog.STATUS_SUCCESS, message="Empresa actualizada en NUVVI y MATIAS.", metadata={"previous": previous, "current": payload})
+        write_audit_log(request=self.request, action="empresa_actualizada_proveedor", entity="Company", entity_id=company.id, status=AuditLog.STATUS_SUCCESS, message="Empresa actualizada en NUVVI y el proveedor.", metadata={"previous": previous, "current": payload})
         return company
 
     def archive_company(self, company):
+        self.ensure_ready()
+        link = company.provider_links.filter(provider=CompanyProviderLink.PROVIDER_MATIAS, environment=self.connection.environment).first()
+        if not link or not link.matias_client_uuid:
+            raise CompanyValidationError("No se puede eliminar la empresa porque no hay un identificador remoto válido. Sincronízala primero.")
+        response = self.client.disable_company(client_uuid=link.matias_client_uuid)
+        successful = response["ok"] and response_success(response.get("data"))
+        self.record_attempt(company=company, operation="DELETE", response=response, method="DELETE", successful=successful, error_code=str(response.get("status_code") or ""))
+        if not successful:
+            link.provider_status = CompanyProviderLink.STATUS_SYNC_ERROR
+            link.last_error_code = str(response.get("status_code") or "PROVIDER_ERROR")
+            link.last_error_message = response.get("error") or "El proveedor no confirmó la desactivación de la empresa."
+            link.save(update_fields=["provider_status", "last_error_code", "last_error_message", "updated_at"])
+            raise CompanyValidationError(link.last_error_message)
+
+        link.provider_status = CompanyProviderLink.STATUS_REMOTE_DISABLED
+        link.enabled_in_provider = False
+        link.last_sync_at = timezone.now()
+        link.last_success_at = timezone.now()
+        link.last_error_code = ""
+        link.last_error_message = ""
+        link.last_remote_snapshot = sanitized_payload(response.get("data", {}))
+        link.save()
         company.local_status = Company.LOCAL_ARCHIVED
         company.archived_at = timezone.now()
         company.save(update_fields=["local_status", "archived_at", "updated_at"])
-        write_audit_log(request=self.request, action="empresa_archivada", entity="Company", entity_id=company.id, status=AuditLog.STATUS_SUCCESS, message="Empresa archivada localmente.")
+        if company.owner_user_id:
+            User.objects.filter(pk=company.owner_user_id).update(is_active=False)
+        write_audit_log(request=self.request, action="empresa_eliminada", entity="Company", entity_id=company.id, status=AuditLog.STATUS_SUCCESS, message="Empresa archivada en NUVVI y deshabilitada en el proveedor.", metadata={"environment": self.connection.environment, "provider_client_uuid": link.matias_client_uuid})
         return company
 
     def provider_action(self, company, *, action):
         link = company.provider_links.filter(provider=CompanyProviderLink.PROVIDER_MATIAS, environment=self.connection.environment).first()
         if not link or not link.matias_client_uuid:
-            raise CompanyValidationError("La empresa no tiene UUID de cliente MATIAS para ejecutar esta acción.")
+            raise CompanyValidationError("La empresa no tiene identificador de cliente en el proveedor para ejecutar esta acción.")
         response = self.client.enable_company(client_uuid=link.matias_client_uuid) if action == "ENABLE" else self.client.disable_company(client_uuid=link.matias_client_uuid)
         self.record_attempt(company=company, operation=action, response=response, method="POST" if action == "ENABLE" else "DELETE", successful=response["ok"])
         if not response["ok"]:
-            raise CompanyValidationError(response.get("error") or "MATIAS rechazó la acción solicitada.")
+            raise CompanyValidationError(response.get("error") or "El proveedor rechazó la acción solicitada.")
         link.provider_status = CompanyProviderLink.STATUS_REGISTERED if action == "ENABLE" else CompanyProviderLink.STATUS_REMOTE_DISABLED
         link.enabled_in_provider = action == "ENABLE"
         link.last_sync_at = timezone.now()
@@ -513,30 +537,30 @@ class CompanyApplicationService:
     def stats(self, company):
         link = company.provider_links.filter(provider=CompanyProviderLink.PROVIDER_MATIAS, environment=self.connection.environment).first()
         if not link or not link.matias_client_uuid:
-            raise CompanyValidationError("La empresa no tiene UUID MATIAS para consultar estadísticas.")
+            raise CompanyValidationError("La empresa no tiene identificador en el proveedor para consultar estadísticas.")
         response = self.client.get_company_stats(client_uuid=link.matias_client_uuid)
         self.record_attempt(company=company, operation="STATS", response=response, method="GET", successful=response["ok"])
         if not response["ok"]:
-            raise CompanyValidationError(response.get("error") or "No se pudieron consultar estadísticas MATIAS.")
+            raise CompanyValidationError(response.get("error") or "No se pudieron consultar las estadísticas del proveedor.")
         return sanitized_payload(response["data"])
 
     def settings(self, company):
         link = company.provider_links.filter(provider=CompanyProviderLink.PROVIDER_MATIAS, environment=self.connection.environment).first()
         if not link or not link.matias_client_uuid:
-            raise CompanyValidationError("La empresa no tiene UUID MATIAS para consultar configuración.")
+            raise CompanyValidationError("La empresa no tiene identificador en el proveedor para consultar la configuración.")
         response = self.client.get_settings(client_uuid=link.matias_client_uuid)
         if not response["ok"]:
-            raise CompanyValidationError(response.get("error") or "No se pudo consultar configuración MATIAS.")
+            raise CompanyValidationError(response.get("error") or "No se pudo consultar la configuración del proveedor.")
         return sanitized_payload(response["data"])
 
     def update_setting(self, company, *, key, value):
         link = company.provider_links.filter(provider=CompanyProviderLink.PROVIDER_MATIAS, environment=self.connection.environment).first()
         if not link or not link.matias_client_uuid:
-            raise CompanyValidationError("La empresa no tiene UUID MATIAS para actualizar configuración.")
+            raise CompanyValidationError("La empresa no tiene identificador en el proveedor para actualizar la configuración.")
         response = self.client.update_setting(client_uuid=link.matias_client_uuid, key=key, value=value)
         self.record_attempt(company=company, operation="SETTING", response=response, method="PUT", successful=response["ok"])
         if not response["ok"]:
-            raise CompanyValidationError(response.get("error") or "No se pudo actualizar configuración MATIAS.")
+            raise CompanyValidationError(response.get("error") or "No se pudo actualizar la configuración del proveedor.")
         return sanitized_payload(response["data"])
 
 
