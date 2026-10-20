@@ -276,6 +276,50 @@ def parse_matias_datetime(value):
     return None
 
 
+def extract_generated_pat(response_data):
+    """Extract a one-time PAT from the documented and common API envelopes."""
+    token_keys = {
+        "token", "access_token", "accesstoken", "plain_text_token",
+        "plaintexttoken", "personal_access_token", "personalaccesstoken",
+    }
+
+    def walk(value):
+        if isinstance(value, dict):
+            for key, candidate in value.items():
+                if str(key).lower() in token_keys:
+                    if isinstance(candidate, str) and candidate.strip():
+                        return candidate.strip()
+                    nested = walk(candidate)
+                    if nested:
+                        return nested
+            for candidate in value.values():
+                nested = walk(candidate)
+                if nested:
+                    return nested
+        elif isinstance(value, list):
+            for candidate in value:
+                nested = walk(candidate)
+                if nested:
+                    return nested
+        return ""
+
+    return walk(response_data)
+
+
+def response_key_paths(value, prefix=""):
+    """Describe response fields for diagnostics without logging their values."""
+    paths = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            paths.append(path)
+            if isinstance(item, (dict, list)):
+                paths.extend(response_key_paths(item, path))
+    elif isinstance(value, list) and value:
+        paths.extend(response_key_paths(value[0], f"{prefix}[]"))
+    return paths
+
+
 def is_token_expired(connection):
     return bool(connection.encrypted_access_token and connection.token_expires_at and connection.token_expires_at <= timezone.now())
 
@@ -607,15 +651,13 @@ def generate_pat(connection, *, email, password, token_name, description, expire
             raise ValueError(message or "MATIAS no pudo crear el PAT.")
 
         response_data = token_response["data"]
-        data = response_data.get("data") if isinstance(response_data.get("data"), dict) else response_data
-        pat = (
-            data.get("accessToken") or data.get("plain_text_token")
-            or data.get("access_token") or data.get("token")
-            or response_data.get("token")
-        )
+        data = response_data.get("data") if isinstance(response_data, dict) and isinstance(response_data.get("data"), dict) else response_data
+        pat = extract_generated_pat(response_data)
         if not pat:
-            write_audit_log(request=request, action="matias_pat_generacion_fallida", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_ERROR, message="MATIAS creó el PAT pero no devolvió data.accessToken.", error_message="Respuesta exitosa sin data.accessToken.", metadata={**metadata, "error_code": "PAT_ACCESS_TOKEN_MISSING"})
-            raise ValueError("MATIAS respondió exitosamente, pero no devolvió data.accessToken.")
+            response_keys = response_key_paths(response_data)
+            write_audit_log(request=request, action="matias_pat_generacion_fallida", entity="MatiasConnection", entity_id=connection.id, status=AuditLog.STATUS_ERROR, message="MATIAS respondió al crear el PAT sin entregar un token utilizable.", error_message="Respuesta exitosa sin campo de token reconocido.", metadata={**metadata, "error_code": "PAT_ACCESS_TOKEN_MISSING", "response_keys": response_keys})
+            shape = ", ".join(response_keys[:20]) or "sin campos reconocibles"
+            raise ValueError(f"MATIAS confirmó la creación, pero no entregó el PAT en un formato reconocible. Campos recibidos: {shape}. No se guardó ningún token.")
 
         connection = store_validated_pat(
             connection,

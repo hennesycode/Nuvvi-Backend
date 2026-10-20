@@ -1,7 +1,7 @@
 from django.test import SimpleTestCase, TestCase
 from unittest.mock import patch
 
-from .matias_service import CATALOG_ENDPOINTS, get_records, has_data_records, normalize_base_url, sync_catalogs
+from .matias_service import CATALOG_ENDPOINTS, extract_generated_pat, get_records, has_data_records, normalize_base_url, sync_catalogs
 from .models import MatiasCatalogSync, MatiasConnection
 from .serializers import MatiasConnectionSerializer, MatiasGeneratePatSerializer, validate_matias_token_name
 
@@ -40,6 +40,23 @@ class MatiasDocumentationContractTests(SimpleTestCase):
 
         self.assertFalse(serializer.is_valid())
         self.assertIn("expires_in_days", serializer.errors)
+
+    def test_pat_extraction_matches_sandbox_quickstart_response(self):
+        payload = {
+            "success": True,
+            "token": "1|sandbox-pat-value",
+            "data": {"name": "Nuvvi Sandbox", "expires_at": "2026-11-01T00:00:00Z"},
+        }
+
+        self.assertEqual(extract_generated_pat(payload), "1|sandbox-pat-value")
+
+    def test_pat_extraction_handles_nested_token_envelopes(self):
+        payload = {"success": True, "data": {"token": {"plainTextToken": "nested-pat-value"}}}
+
+        self.assertEqual(extract_generated_pat(payload), "nested-pat-value")
+
+    def test_pat_extraction_never_uses_non_string_metadata_as_token(self):
+        self.assertEqual(extract_generated_pat({"success": True, "data": {"token": {"id": 12}}}), "")
 
 
 class MatiasConnectionConfigurationTests(TestCase):
