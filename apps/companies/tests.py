@@ -140,6 +140,25 @@ class MatiasCompanySyncTests(TestCase):
         self.assertIsNone(company.archived_at)
         self.assertEqual(company.local_status, Company.LOCAL_ACTIVE)
 
+    @patch("apps.companies.services.write_audit_log")
+    @patch.object(MatiasCompanyClient, "update_company")
+    def test_local_only_company_edits_do_not_call_provider_update(self, update_mock, _audit_mock):
+        company = Company.objects.create(
+            environment="sandbox", legal_name="Empresa estable", nit="900123460",
+            email="stable@example.test", owner_first_name="Company", owner_last_name="Owner",
+            country_id="1", city_id="1", address="Calle 1", mobile="+573001234567",
+        )
+        CompanyProviderLink.objects.create(
+            company=company, environment="sandbox", matias_company_id="42", matias_client_uuid="client-uuid",
+        )
+
+        self.service.update_company(company, data={"address": "Carrera 10 #20-30", "notes": "Actualizado"})
+
+        company.refresh_from_db()
+        self.assertEqual(company.address, "Carrera 10 #20-30")
+        self.assertEqual(company.notes, "Actualizado")
+        update_mock.assert_not_called()
+
     def test_identity_check_returns_duplicate_flags_without_company_payload(self):
         admin = User.objects.create_superuser(email="admin@example.test", full_name="Admin", password="safe-password")
         Company.objects.create(

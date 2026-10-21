@@ -461,17 +461,23 @@ class CompanyApplicationService:
         if Company.objects.filter(environment=self.connection.environment, email=new_email).exclude(id=company.id).exists():
             raise CompanyValidationError("Ya existe una empresa con este correo.")
         previous = {"legal_name": company.legal_name, "nit": company.nit, "email": company.email}
-        link.provider_status = CompanyProviderLink.STATUS_PENDING_UPDATE
-        link.save(update_fields=["provider_status", "updated_at"])
         payload = {"name": str(data.get("company_name", company.legal_name)).strip(), "nit": new_nit, "email": new_email}
-        response = self.client.update_company(client_uuid=link.matias_client_uuid, payload=payload)
-        self.record_attempt(company=company, operation="UPDATE", response=response, method="PUT", successful=response["ok"])
-        if not response["ok"]:
-            link.provider_status = CompanyProviderLink.STATUS_SYNC_ERROR
-            link.last_error_code = str(response.get("status_code") or "PROVIDER_ERROR")
-            link.last_error_message = response.get("error") or "El proveedor rechazó la actualización."
-            link.save()
-            raise CompanyValidationError(link.last_error_message)
+        provider_fields_changed = (
+            payload["name"] != company.legal_name
+            or new_nit != company.nit
+            or new_email != normalize_email(company.email)
+        )
+        if provider_fields_changed:
+            link.provider_status = CompanyProviderLink.STATUS_PENDING_UPDATE
+            link.save(update_fields=["provider_status", "updated_at"])
+            response = self.client.update_company(client_uuid=link.matias_client_uuid, payload=payload)
+            self.record_attempt(company=company, operation="UPDATE", response=response, method="PUT", successful=response["ok"])
+            if not response["ok"]:
+                link.provider_status = CompanyProviderLink.STATUS_SYNC_ERROR
+                link.last_error_code = str(response.get("status_code") or "PROVIDER_ERROR")
+                link.last_error_message = response.get("error") or "El proveedor rechazó la actualización."
+                link.save()
+                raise CompanyValidationError(link.last_error_message)
         company.legal_name = payload["name"]
         company.nit = new_nit
         company.email = new_email
@@ -485,10 +491,11 @@ class CompanyApplicationService:
             if field in data:
                 setattr(company, field, str(data.get(field) or "").strip())
         company.save()
-        detail = self.client.get_company(client_uuid=link.matias_client_uuid)
-        remote = extract_remote_company(detail["data"]) if detail["ok"] else {"id": link.matias_company_id, "client_uuid": link.matias_client_uuid, "name": company.legal_name, "nit": company.nit, "email": company.email, "enabled": link.enabled_in_provider, "raw": {}}
-        self.update_link_from_remote(link, remote)
-        write_audit_log(request=self.request, action="empresa_actualizada_proveedor", entity="Company", entity_id=company.id, status=AuditLog.STATUS_SUCCESS, message="Empresa actualizada en NUVVI y el proveedor.", metadata={"previous": previous, "current": payload})
+        if provider_fields_changed:
+            detail = self.client.get_company(client_uuid=link.matias_client_uuid)
+            remote = extract_remote_company(detail["data"]) if detail["ok"] else {"id": link.matias_company_id, "client_uuid": link.matias_client_uuid, "name": company.legal_name, "nit": company.nit, "email": company.email, "enabled": link.enabled_in_provider, "raw": {}}
+            self.update_link_from_remote(link, remote)
+        write_audit_log(request=self.request, action="empresa_actualizada_proveedor" if provider_fields_changed else "empresa_actualizada_localmente", entity="Company", entity_id=company.id, status=AuditLog.STATUS_SUCCESS, message="Empresa actualizada en NUVVI y el proveedor." if provider_fields_changed else "Información complementaria de la empresa actualizada en NUVVI.", metadata={"previous": previous, "current": payload, "provider_sync": provider_fields_changed})
         return company
 
     def archive_company(self, company):
