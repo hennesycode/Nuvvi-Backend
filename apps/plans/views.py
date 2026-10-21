@@ -1,3 +1,5 @@
+from django.db import transaction
+from django.db.models import Max, Q
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.permissions import BasePermission
@@ -44,12 +46,18 @@ class PlanViewSet(ModelViewSet):
             queryset = queryset.filter(category_id=category)
         return queryset
 
+    @transaction.atomic
     @action(detail=True, methods=["post"])
     def publish(self, request, pk=None):
         plan = self.get_object()
         serializer = self.get_serializer(plan, data={"catalog_status": Plan.CatalogStatus.PUBLISHED}, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        root = plan.parent_plan or plan
+        Plan.objects.filter(
+            Q(pk=root.pk) | Q(parent_plan=root),
+            catalog_status=Plan.CatalogStatus.PUBLISHED,
+        ).exclude(pk=plan.pk).update(catalog_status=Plan.CatalogStatus.RETIRED)
         if not plan.is_active:
             plan.is_active = True
             plan.save(update_fields=["is_active", "updated_at"])
@@ -85,8 +93,34 @@ class PlanViewSet(ModelViewSet):
         data["catalog_status"] = Plan.CatalogStatus.DRAFT
         data["visibility"] = Plan.Visibility.PRIVATE
         data["is_active"] = False
+        data["parent_plan"] = None
+        data["version_number"] = 1
         duplicate = Plan.objects.create(**data)
         return Response(self.get_serializer(duplicate).data, status=status.HTTP_201_CREATED)
+
+    @transaction.atomic
+    @action(detail=True, methods=["post"], url_path="new-version")
+    def new_version(self, request, pk=None):
+        source = self.get_object()
+        root = source.parent_plan or source
+        latest_version = Plan.objects.filter(parent_plan=root).aggregate(value=Max("version_number"))["value"] or root.version_number
+        version_number = max(root.version_number, latest_version) + 1
+
+        fields = [field.name for field in Plan._meta.concrete_fields if field.name not in {"id", "created_at", "updated_at"}]
+        data = {field: getattr(source, field) for field in fields}
+        data["parent_plan"] = root
+        data["version_number"] = version_number
+        data["code"] = f"{slugify(root.code)[:43]}-v{version_number}"
+        suffix = 2
+        base_code = data["code"]
+        while Plan.objects.filter(code=data["code"]).exists():
+            data["code"] = f"{base_code[:46]}-{suffix}"
+            suffix += 1
+        data["catalog_status"] = Plan.CatalogStatus.DRAFT
+        data["visibility"] = Plan.Visibility.PRIVATE
+        data["is_active"] = False
+        version = Plan.objects.create(**data)
+        return Response(self.get_serializer(version).data, status=status.HTTP_201_CREATED)
 
     def perform_destroy(self, instance):
         if instance.subscriptions.exists():

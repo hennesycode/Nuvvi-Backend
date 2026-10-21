@@ -51,8 +51,8 @@ class Plan(models.Model):
     plan_type = models.CharField(max_length=20, choices=PlanType.choices, default=PlanType.INVOICING)
     category = models.ForeignKey(PlanCategory, on_delete=models.SET_NULL, null=True, blank=True, related_name="plans")
     features = models.JSONField(default=list, blank=True)
-    monthly_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    yearly_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    monthly_price = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True, default=None)
+    yearly_price = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True, default=None)
     monthly_certificate_fee = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     quote_only = models.BooleanField(default=False)
     annual_document_quota = models.PositiveIntegerField(default=0)
@@ -69,12 +69,21 @@ class Plan(models.Model):
     has_cash_register = models.BooleanField(default=False)
     has_api_access = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
+    parent_plan = models.ForeignKey("self", on_delete=models.PROTECT, null=True, blank=True, related_name="versions")
+    version_number = models.PositiveIntegerField(default=1)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = "plans_plan"
         ordering = ["display_order", "monthly_price", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["parent_plan", "version_number"],
+                condition=models.Q(parent_plan__isnull=False),
+                name="plans_unique_child_version",
+            ),
+        ]
 
     def __str__(self):
         return self.name

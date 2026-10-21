@@ -39,14 +39,16 @@ class PlanManagementApiTests(APITestCase):
         self.assertEqual(response.data["annual_document_quota"], 24)
         self.assertTrue(response.data["requires_base_plan"])
 
-    def test_rejects_payroll_addon_without_base_plan(self):
+    def test_payroll_addon_requires_base_plan_even_if_client_omits_flag(self):
         response = self.client.post("/api/plans/", {
             "code": "payroll-invalid", "name": "Nómina sin base", "plan_type": "payroll_addon",
             "monthly_price": "9900", "yearly_price": "89000", "max_employees": 2,
         }, format="json")
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("requires_base_plan", response.data)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data["requires_base_plan"])
+        self.assertFalse(response.data["has_inventory"])
+        self.assertFalse(response.data["has_cash_register"])
 
     def test_new_plan_is_private_draft_until_explicitly_published(self):
         response = self.client.post("/api/plans/", {
@@ -116,6 +118,58 @@ class PlanManagementApiTests(APITestCase):
         self.assertEqual(response.data["catalog_status"], Plan.CatalogStatus.DRAFT)
         self.assertEqual(response.data["visibility"], Plan.Visibility.PRIVATE)
         self.assertTrue(Plan.objects.filter(pk=plan.pk).exists())
+
+    def test_invoicing_policy_and_category_are_applied_by_backend(self):
+        response = self.client.post("/api/plans/", {
+            "code": "nuvvi-inicio-policy", "name": "NUVVI Inicio",
+            "monthly_price": "24900", "yearly_price": "219000",
+            "has_inventory": False, "has_cash_register": False,
+            "certificate_included_annual": False, "max_issuers": 8,
+        }, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data["has_inventory"])
+        self.assertTrue(response.data["has_cash_register"])
+        self.assertTrue(response.data["certificate_included_annual"])
+        self.assertEqual(response.data["max_issuers"], 1)
+        self.assertEqual(response.data["category_name"], "Facturación electrónica")
+
+    def test_enterprise_plan_can_be_saved_without_fixed_prices(self):
+        response = self.client.post("/api/plans/", {
+            "code": "nuvvi-empresarial", "name": "NUVVI Empresarial",
+            "plan_type": "enterprise", "monthly_price": None, "yearly_price": None,
+        }, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data["quote_only"])
+        self.assertIsNone(response.data["monthly_price"])
+        self.assertIsNone(response.data["yearly_price"])
+
+    def test_new_version_is_a_private_draft_and_publishing_retires_old_catalog_version(self):
+        original = Plan.objects.create(
+            code="nuvvi-negocio-v1", name="NUVVI Negocio", monthly_price="39900",
+            yearly_price="359000", catalog_status=Plan.CatalogStatus.PUBLISHED,
+            visibility=Plan.Visibility.PUBLIC,
+        )
+
+        version_response = self.client.post(f"/api/plans/{original.id}/new-version/")
+
+        self.assertEqual(version_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(version_response.data["version_number"], 2)
+        self.assertEqual(version_response.data["parent_plan"], original.id)
+        self.assertEqual(version_response.data["catalog_status"], Plan.CatalogStatus.DRAFT)
+        self.assertEqual(version_response.data["name"], original.name)
+
+        new_version = Plan.objects.get(pk=version_response.data["id"])
+        new_version.visibility = Plan.Visibility.PUBLIC
+        new_version.yearly_price = "399000"
+        new_version.save()
+        publish_response = self.client.post(f"/api/plans/{new_version.id}/publish/")
+
+        self.assertEqual(publish_response.status_code, status.HTTP_200_OK)
+        original.refresh_from_db()
+        self.assertEqual(original.catalog_status, Plan.CatalogStatus.RETIRED)
+        self.assertEqual(str(original.yearly_price), "359000.00")
 
     def test_category_with_plans_cannot_be_deleted(self):
         category = PlanCategory.objects.create(name="Contabilidad")
