@@ -145,6 +145,19 @@ class CompanyUpdateSerializer(serializers.Serializer):
     company_name = serializers.CharField(max_length=255, required=False)
     nit = serializers.CharField(max_length=50, required=False)
     email = serializers.EmailField(required=False)
+    identity_document_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    identity_document_code = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    identity_document_name = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    verification_digit = serializers.CharField(max_length=2, required=False, allow_blank=True)
+    organization_type_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    organization_type_code = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    organization_type_name = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    accounting_regime_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    accounting_regime_code = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    accounting_regime_name = serializers.CharField(max_length=160, required=False, allow_blank=True)
+    fiscal_regime_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    fiscal_regime_code = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    fiscal_regime_name = serializers.CharField(max_length=120, required=False, allow_blank=True)
     owner_first_name = serializers.CharField(max_length=120, required=False, allow_blank=True)
     owner_last_name = serializers.CharField(max_length=120, required=False, allow_blank=True)
     country_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
@@ -162,6 +175,11 @@ class CompanyUpdateSerializer(serializers.Serializer):
 
     def validate_email(self, value):
         return normalize_email(value)
+
+    def validate_verification_digit(self, value):
+        if value and (not value.isdigit() or len(value) > 1):
+            raise serializers.ValidationError("El dígito de verificación debe ser un número de un dígito.")
+        return value
 
 
 class CompanySettingSerializer(serializers.Serializer):

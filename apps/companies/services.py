@@ -475,7 +475,13 @@ class CompanyApplicationService:
         company.legal_name = payload["name"]
         company.nit = new_nit
         company.email = new_email
-        for field in ("owner_first_name", "owner_last_name", "department_id", "city_id", "country_id", "address", "mobile", "phone", "notes", "assigned_executive"):
+        for field in (
+            "owner_first_name", "owner_last_name", "identity_document_id", "identity_document_code",
+            "identity_document_name", "verification_digit", "organization_type_id", "organization_type_code",
+            "organization_type_name", "accounting_regime_id", "accounting_regime_code", "accounting_regime_name",
+            "fiscal_regime_id", "fiscal_regime_code", "fiscal_regime_name", "department_id", "city_id",
+            "country_id", "address", "mobile", "phone", "notes", "assigned_executive",
+        ):
             if field in data:
                 setattr(company, field, str(data.get(field) or "").strip())
         company.save()

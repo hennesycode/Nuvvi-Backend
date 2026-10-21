@@ -81,6 +81,26 @@ class MatiasCompanySyncTests(TestCase):
             self.assertEqual(request_mock.call_args.kwargs["method"], "DELETE")
 
     @patch("apps.companies.services.write_audit_log")
+    @patch.object(MatiasCompanyClient, "create_company")
+    @patch.object(MatiasCompanyClient, "list_companies")
+    def test_create_persists_company_before_linking_provider_attempt(self, list_mock, create_mock, _audit_mock):
+        list_mock.return_value = {"ok": True, "status_code": 200, "data": {"success": True, "dataRecords": {"data": []}}}
+        create_mock.return_value = {"ok": False, "status_code": 422, "error": "Rejected", "error_type": "HTTP", "data": {}, "endpoint": "/company/parent-uuid/customer"}
+        data = {
+            "nit": "900123459", "email": "new-company@example.test", "company_name": "New Company",
+            "first_name": "New", "last_name": "Owner", "password": "safe-password-123",
+            "password_confirmation": "safe-password-123", "country_id": "1", "city_id": "1",
+            "address": "Calle 1", "mobile": "+573001234567", "phone": "",
+        }
+
+        with self.assertRaisesRegex(ValueError, "Rejected"):
+            self.service.create_company(data=data, request_id="create-company-request")
+
+        company = Company.objects.get(nit="900123459")
+        attempt = CompanySyncAttempt.objects.get(request_identifier="create-company-request")
+        self.assertEqual(attempt.company_id, company.id)
+
+    @patch("apps.companies.services.write_audit_log")
     @patch.object(MatiasCompanyClient, "disable_company")
     def test_delete_archives_locally_only_after_provider_confirms_disable(self, disable_mock, _audit_mock):
         owner = User.objects.create_user(email="owner@example.test", full_name="Company Owner")
