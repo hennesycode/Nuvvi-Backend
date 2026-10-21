@@ -193,8 +193,8 @@ class CompanyDianConfigurationView(APIView):
                 return Response({"detail": "Selecciona el certificado .p12/.pfx e ingresa su contraseña."}, status=400)
             if not isinstance(payload["certificate"], str) or not payload["certificate"].startswith("data:application/x-pkcs12;base64,"):
                 return Response({"detail": "El certificado debe enviarse codificado como PKCS#12 (.p12/.pfx)."}, status=400)
-            if len(payload["certificate"]) > 2_100_000:
-                return Response({"detail": "El certificado supera el tamaño máximo permitido de 1,5 MB."}, status=400)
+            if len(payload["certificate"]) > 14_000_000:
+                return Response({"detail": "El certificado supera el límite de carga permitido por NUVVI."}, status=400)
         elif resource == "certificate" and action == "expiration":
             dni = body.get("dni") or company.nit
             endpoint, method, payload = f"/certificate/expiration/{dni}", "GET", None
