@@ -1,15 +1,15 @@
 from django.db import transaction
 from django.db.models import Max, Q
 from rest_framework.viewsets import ModelViewSet
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.permissions import BasePermission
 from rest_framework.exceptions import ValidationError
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import status
 from django.utils.text import slugify
-from .models import Plan, PlanCategory
-from .serializers import PlanCategorySerializer, PlanSerializer
+from .models import Capability, Plan, PlanBundle, PlanCategory
+from .serializers import CapabilitySerializer, PlanBundleSerializer, PlanCategorySerializer, PlanSerializer
 
 
 class IsSuperAdmin(BasePermission):
@@ -27,7 +27,7 @@ class PlanViewSet(ModelViewSet):
         return [permission()]
 
     def get_queryset(self):
-        queryset = Plan.objects.all()
+        queryset = Plan.objects.select_related("category", "parent_plan").prefetch_related("plan_capabilities__capability")
         user = self.request.user
         if not (user.is_superuser or user.admin_role == "superadmin"):
             queryset = queryset.filter(
@@ -46,6 +46,14 @@ class PlanViewSet(ModelViewSet):
             queryset = queryset.filter(category_id=category)
         return queryset
 
+    @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="commercial-proposals")
+    def commercial_proposals(self, request):
+        queryset = Plan.objects.filter(
+            commercial_status=Plan.CommercialStatus.PROPOSAL,
+            catalog_status=Plan.CatalogStatus.DRAFT,
+        ).select_related("category").prefetch_related("plan_capabilities__capability")
+        return Response(self.get_serializer(queryset, many=True).data)
+
     @transaction.atomic
     @action(detail=True, methods=["post"])
     def publish(self, request, pk=None):
@@ -62,6 +70,30 @@ class PlanViewSet(ModelViewSet):
             plan.is_active = True
             plan.save(update_fields=["is_active", "updated_at"])
         return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], url_path="approve-proposal")
+    def approve_proposal(self, request, pk=None):
+        plan = self.get_object()
+        if plan.catalog_status != Plan.CatalogStatus.DRAFT:
+            raise ValidationError("Solo se aprueban propuestas que siguen en borrador.")
+        plan.commercial_status = Plan.CommercialStatus.APPROVED
+        plan.save(update_fields=["commercial_status", "updated_at"])
+        return Response(self.get_serializer(plan).data)
+
+    @action(detail=True, methods=["post"], url_path="validate-tax")
+    def validate_tax(self, request, pk=None):
+        plan = self.get_object()
+        validated = request.data.get("validated")
+        note = str(request.data.get("note", "")).strip()
+        if not isinstance(validated, bool):
+            raise ValidationError({"validated": "Indica explícitamente true o false tras revisar con el responsable tributario."})
+        if validated and not note:
+            raise ValidationError({"note": "Registra la referencia o conclusión de la validación tributaria."})
+        plan.tax_validation_status = Plan.TaxValidationStatus.VALIDATED if validated else Plan.TaxValidationStatus.PENDING
+        if note:
+            plan.tax_validation_note = note
+        plan.save(update_fields=["tax_validation_status", "tax_validation_note", "updated_at"])
+        return Response(self.get_serializer(plan).data)
 
     @action(detail=True, methods=["post"])
     def retire(self, request, pk=None):
@@ -93,6 +125,8 @@ class PlanViewSet(ModelViewSet):
         data["catalog_status"] = Plan.CatalogStatus.DRAFT
         data["visibility"] = Plan.Visibility.PRIVATE
         data["is_active"] = False
+        data["commercial_status"] = Plan.CommercialStatus.PROPOSAL
+        data["tax_validation_status"] = Plan.TaxValidationStatus.PENDING
         data["parent_plan"] = None
         data["version_number"] = 1
         duplicate = Plan.objects.create(**data)
@@ -119,6 +153,8 @@ class PlanViewSet(ModelViewSet):
         data["catalog_status"] = Plan.CatalogStatus.DRAFT
         data["visibility"] = Plan.Visibility.PRIVATE
         data["is_active"] = False
+        data["commercial_status"] = Plan.CommercialStatus.PROPOSAL
+        data["tax_validation_status"] = Plan.TaxValidationStatus.PENDING
         version = Plan.objects.create(**data)
         return Response(self.get_serializer(version).data, status=status.HTTP_201_CREATED)
 
@@ -138,3 +174,31 @@ class PlanCategoryViewSet(ModelViewSet):
             from rest_framework.exceptions import ValidationError
             raise ValidationError("No puedes eliminar una categoría que tiene planes. Asigna otra categoría primero.")
         instance.delete()
+
+
+class CapabilityViewSet(ModelViewSet):
+    queryset = Capability.objects.all()
+    serializer_class = CapabilitySerializer
+
+    def get_permissions(self):
+        permission = IsAuthenticated if self.action in ("list", "retrieve") else IsSuperAdmin
+        return [permission()]
+
+
+class PlanBundleViewSet(ModelViewSet):
+    queryset = PlanBundle.objects.select_related("billing_plan", "payroll_plan")
+    serializer_class = PlanBundleSerializer
+
+    def get_permissions(self):
+        permission = AllowAny if self.action == "list" else IsSuperAdmin
+        return [permission()]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        user = self.request.user
+        if not (user.is_authenticated and (user.is_superuser or user.admin_role == "superadmin")):
+            queryset = queryset.filter(commercial_status=PlanBundle.CommercialStatus.PROPOSAL, is_active=False)
+        return queryset
+
+    def perform_create(self, serializer):
+        serializer.save(commercial_status=PlanBundle.CommercialStatus.PROPOSAL, is_active=False)

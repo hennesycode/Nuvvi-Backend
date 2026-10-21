@@ -3,7 +3,7 @@ import re
 from django.db import transaction
 from django.db.models import Max
 from rest_framework import serializers
-from .models import Plan, PlanCategory
+from .models import Capability, Plan, PlanBundle, PlanCategory
 
 
 class PlanCategorySerializer(serializers.ModelSerializer):
@@ -13,13 +13,36 @@ class PlanCategorySerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at"]
 
 
+class CapabilitySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Capability
+        fields = ["id", "code", "name", "description", "validation_status", "validation_notes", "reviewed_at"]
+        read_only_fields = ["id", "reviewed_at"]
+
+    def validate(self, attrs):
+        status = attrs.get("validation_status", getattr(self.instance, "validation_status", Capability.ValidationStatus.PENDING))
+        notes = attrs.get("validation_notes", getattr(self.instance, "validation_notes", ""))
+        if status == Capability.ValidationStatus.AVAILABLE and not notes.strip():
+            raise serializers.ValidationError({"validation_notes": "Registra qué validación técnica respalda la disponibilidad."})
+        return attrs
+
+    def update(self, instance, validated_data):
+        from django.utils import timezone
+
+        validated_data["reviewed_by"] = self.context["request"].user
+        validated_data["reviewed_at"] = timezone.now()
+        return super().update(instance, validated_data)
+
+
 class PlanSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source="category.name", read_only=True, allow_null=True)
+    validated_capabilities = serializers.SerializerMethodField()
+    plan_capabilities = serializers.SerializerMethodField()
 
     class Meta:
         model = Plan
         fields = "__all__"
-        read_only_fields = ["id", "created_at", "updated_at", "parent_plan", "version_number"]
+        read_only_fields = ["id", "created_at", "updated_at", "parent_plan", "version_number", "commercial_status", "tax_validation_status"]
 
     def validate_code(self, value):
         value = value.strip()
@@ -28,9 +51,36 @@ class PlanSerializer(serializers.ModelSerializer):
         if self.instance and self.instance.catalog_status != Plan.CatalogStatus.DRAFT:
             raise serializers.ValidationError("Solo se puede cambiar el código de un borrador.")
         value = value.lower()
-        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", value):
-            raise serializers.ValidationError("Usa letras minúsculas, números y guiones; no puede iniciar ni terminar con guion.")
+        if not re.fullmatch(r"[a-z0-9]+(?:[_-][a-z0-9]+)*", value):
+            raise serializers.ValidationError("Usa letras minúsculas, números, guiones o guiones bajos.")
         return value
+
+    def validate_slug(self, value):
+        value = value.strip()
+        if not re.fullmatch(r"[a-z0-9]+(?:[_-][a-z0-9]+)*", value):
+            raise serializers.ValidationError("El slug debe usar minúsculas, números, guiones o guiones bajos.")
+        return value
+
+    def get_validated_capabilities(self, obj):
+        return [
+            {"code": assignment.capability.code, "name": assignment.capability.name, "level": assignment.scope_level}
+            for assignment in obj.plan_capabilities.select_related("capability").filter(
+                included_in_proposal=True,
+                capability__validation_status=Capability.ValidationStatus.AVAILABLE,
+            )
+        ]
+
+    def get_plan_capabilities(self, obj):
+        return [{
+            "id": assignment.id,
+            "scope_level": assignment.scope_level,
+            "included_in_proposal": assignment.included_in_proposal,
+            "capability": {
+                "code": assignment.capability.code,
+                "name": assignment.capability.name,
+                "validation_status": assignment.capability.validation_status,
+            },
+        } for assignment in obj.plan_capabilities.select_related("capability").all()]
 
     def validate_features(self, value):
         if not isinstance(value, list):
@@ -47,6 +97,7 @@ class PlanSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         plan_type = attrs.get("plan_type", getattr(self.instance, "plan_type", Plan.PlanType.INVOICING))
+        attrs.setdefault("plan_type", plan_type)
         requires_base_plan = attrs.get("requires_base_plan", getattr(self.instance, "requires_base_plan", False))
         max_employees = attrs.get("max_employees", getattr(self.instance, "max_employees", 0))
         quote_only = attrs.get("quote_only", getattr(self.instance, "quote_only", False))
@@ -65,6 +116,8 @@ class PlanSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     "catalog_status": "Solo se pueden editar borradores. Crea una nueva versión para cambiar una oferta publicada y conservar las condiciones contratadas."
                 })
+        if "capabilities" in attrs and self.instance and self.instance.catalog_status != Plan.CatalogStatus.DRAFT:
+            raise serializers.ValidationError({"capabilities": "Crea una nueva versión para cambiar capacidades de una oferta existente."})
         if catalog_status == Plan.CatalogStatus.PUBLISHED and (
             not self.instance or self.instance.catalog_status != Plan.CatalogStatus.PUBLISHED
         ) and getattr(self.context.get("view"), "action", None) != "publish":
@@ -72,8 +125,6 @@ class PlanSerializer(serializers.ModelSerializer):
 
         if plan_type == Plan.PlanType.INVOICING:
             attrs.update({
-                "has_inventory": True,
-                "has_cash_register": True,
                 "max_issuers": 1,
                 "requires_base_plan": False,
                 "certificate_included_annual": True,
@@ -97,8 +148,22 @@ class PlanSerializer(serializers.ModelSerializer):
         monthly_price = attrs.get("monthly_price", monthly_price)
         yearly_price = attrs.get("yearly_price", yearly_price)
         quote_only = attrs.get("quote_only", quote_only)
-        if catalog_status == Plan.CatalogStatus.PUBLISHED:
+        publishing = catalog_status == Plan.CatalogStatus.PUBLISHED and (
+            not self.instance or self.instance.catalog_status != Plan.CatalogStatus.PUBLISHED
+        )
+        if publishing:
             errors = {}
+            commercial_status = attrs.get("commercial_status", getattr(self.instance, "commercial_status", Plan.CommercialStatus.PROPOSAL))
+            tax_status = attrs.get("tax_validation_status", getattr(self.instance, "tax_validation_status", Plan.TaxValidationStatus.PENDING))
+            if self.instance and commercial_status != Plan.CommercialStatus.APPROVED:
+                errors["commercial_status"] = "La propuesta necesita aprobación administrativa antes de publicarse."
+            if self.instance and tax_status != Plan.TaxValidationStatus.VALIDATED:
+                errors["tax_validation_status"] = "Valida el tratamiento tributario antes de publicar precios."
+            pending_capabilities = obj_pending_capabilities(self.instance, attrs)
+            if pending_capabilities:
+                errors["capabilities"] = "Hay funcionalidades propuestas sin validación técnica: " + ", ".join(pending_capabilities)
+            if self.instance and self.instance.commercial_status == Plan.CommercialStatus.PROPOSAL and self.instance.features and not self.instance.plan_capabilities.filter(included_in_proposal=True).exists():
+                errors["capabilities"] = "Asocia y valida técnicamente las capacidades antes de publicar esta propuesta."
             if not quote_only and (monthly_price is None or monthly_price <= 0) and (yearly_price is None or yearly_price <= 0):
                 errors["monthly_price"] = "Un plan publicado debe tener al menos un precio, salvo que sea por cotización."
             if not self.instance and not attrs.get("name", "").strip():
@@ -111,6 +176,12 @@ class PlanSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def create(self, validated_data):
+        capabilities = validated_data.pop("capabilities", [])
+        validated_data.setdefault("catalog_status", Plan.CatalogStatus.DRAFT)
+        validated_data.setdefault("visibility", Plan.Visibility.PRIVATE)
+        validated_data.setdefault("is_active", False)
+        validated_data.setdefault("commercial_status", Plan.CommercialStatus.PROPOSAL)
+        validated_data.setdefault("tax_validation_status", Plan.TaxValidationStatus.PENDING)
         if not validated_data.get("category"):
             category_name = {
                 Plan.PlanType.INVOICING: "Facturación electrónica",
@@ -123,4 +194,46 @@ class PlanSerializer(serializers.ModelSerializer):
         if not validated_data.get("display_order"):
             latest_order = Plan.objects.filter(category=validated_data["category"]).aggregate(value=Max("display_order"))["value"] or 0
             validated_data["display_order"] = latest_order + 1
-        return super().create(validated_data)
+        instance = super().create(validated_data)
+        if capabilities:
+            instance.capabilities.set(capabilities)
+        return instance
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        capabilities = validated_data.pop("capabilities", None)
+        instance = super().update(instance, validated_data)
+        if capabilities is not None:
+            instance.capabilities.set(capabilities)
+        return instance
+
+
+def obj_pending_capabilities(instance, attrs):
+    if not instance:
+        return []
+    return list(instance.plan_capabilities.filter(
+        included_in_proposal=True,
+    ).exclude(capability__validation_status=Capability.ValidationStatus.AVAILABLE).values_list("capability__name", flat=True))
+
+
+class PlanBundleSerializer(serializers.ModelSerializer):
+    billing_plan = serializers.PrimaryKeyRelatedField(queryset=Plan.objects.all())
+    payroll_plan = serializers.PrimaryKeyRelatedField(queryset=Plan.objects.all())
+    billing_plan_details = PlanSerializer(source="billing_plan", read_only=True)
+    payroll_plan_details = PlanSerializer(source="payroll_plan", read_only=True)
+    monthly_price = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    yearly_price = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = PlanBundle
+        fields = ["id", "slug", "name", "short_description", "billing_plan", "payroll_plan", "billing_plan_details", "payroll_plan_details", "monthly_price", "yearly_price", "display_order", "commercial_status", "is_active"]
+        read_only_fields = ["id", "commercial_status", "is_active"]
+
+    def validate(self, attrs):
+        billing_plan = attrs.get("billing_plan", getattr(self.instance, "billing_plan", None))
+        payroll_plan = attrs.get("payroll_plan", getattr(self.instance, "payroll_plan", None))
+        if billing_plan and billing_plan.plan_type != Plan.PlanType.INVOICING:
+            raise serializers.ValidationError({"billing_plan": "El componente debe ser facturación electrónica."})
+        if payroll_plan and payroll_plan.plan_type != Plan.PlanType.PAYROLL_ADDON:
+            raise serializers.ValidationError({"payroll_plan": "El componente debe ser nómina electrónica."})
+        return attrs

@@ -50,7 +50,7 @@ class PlanManagementApiTests(APITestCase):
         self.assertFalse(response.data["has_inventory"])
         self.assertFalse(response.data["has_cash_register"])
 
-    def test_new_plan_is_private_draft_until_explicitly_published(self):
+    def test_new_plan_stays_private_draft_until_commercial_tax_and_technical_approval(self):
         response = self.client.post("/api/plans/", {
             "code": "nuvvi-inicio", "name": "NUVVI Inicio", "monthly_price": "24900",
             "yearly_price": "219000", "annual_document_quota": 120,
@@ -59,10 +59,10 @@ class PlanManagementApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["catalog_status"], Plan.CatalogStatus.DRAFT)
         self.assertEqual(response.data["visibility"], Plan.Visibility.PRIVATE)
+        self.assertFalse(response.data["is_active"])
 
         publish_response = self.client.post(f"/api/plans/{response.data['id']}/publish/")
-        self.assertEqual(publish_response.status_code, status.HTTP_200_OK)
-        self.assertEqual(publish_response.data["catalog_status"], Plan.CatalogStatus.PUBLISHED)
+        self.assertEqual(publish_response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_cannot_create_published_plan_without_explicit_publish_action(self):
         response = self.client.post("/api/plans/", {
@@ -128,8 +128,8 @@ class PlanManagementApiTests(APITestCase):
         }, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertTrue(response.data["has_inventory"])
-        self.assertTrue(response.data["has_cash_register"])
+        self.assertFalse(response.data["has_inventory"])
+        self.assertFalse(response.data["has_cash_register"])
         self.assertTrue(response.data["certificate_included_annual"])
         self.assertEqual(response.data["max_issuers"], 1)
         self.assertEqual(response.data["category_name"], "Facturación electrónica")
@@ -163,6 +163,8 @@ class PlanManagementApiTests(APITestCase):
         new_version = Plan.objects.get(pk=version_response.data["id"])
         new_version.visibility = Plan.Visibility.PUBLIC
         new_version.yearly_price = "399000"
+        new_version.commercial_status = Plan.CommercialStatus.APPROVED
+        new_version.tax_validation_status = Plan.TaxValidationStatus.VALIDATED
         new_version.save()
         publish_response = self.client.post(f"/api/plans/{new_version.id}/publish/")
 
