@@ -98,18 +98,17 @@ class PlanSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         plan_type = attrs.get("plan_type", getattr(self.instance, "plan_type", Plan.PlanType.INVOICING))
         attrs.setdefault("plan_type", plan_type)
-        requires_base_plan = attrs.get("requires_base_plan", getattr(self.instance, "requires_base_plan", False))
         max_employees = attrs.get("max_employees", getattr(self.instance, "max_employees", 0))
         quote_only = attrs.get("quote_only", getattr(self.instance, "quote_only", False))
 
 
-        if plan_type == Plan.PlanType.INVOICING:
+        if plan_type == Plan.PlanType.INVOICING and not self.instance:
             attrs.update({
                 "max_issuers": 1,
                 "requires_base_plan": False,
                 "certificate_included_annual": True,
             })
-        elif plan_type == Plan.PlanType.PAYROLL_ADDON:
+        elif plan_type == Plan.PlanType.PAYROLL_ADDON and not self.instance:
             attrs.update({
                 "has_inventory": False,
                 "has_cash_register": False,
@@ -123,16 +122,27 @@ class PlanSerializer(serializers.ModelSerializer):
             attrs.update({"quote_only": True, "monthly_price": None, "yearly_price": None})
             quote_only = True
 
-        if plan_type == Plan.PlanType.PAYROLL_ADDON and max_employees < 1:
+        if plan_type == Plan.PlanType.PAYROLL_ADDON:
+            attrs["requires_base_plan"] = True
+        if not quote_only and plan_type == Plan.PlanType.PAYROLL_ADDON and (max_employees is None or max_employees < 1):
             raise serializers.ValidationError({"max_employees": "Define el máximo de empleados del complemento de nómina."})
-        quote_only = attrs.get("quote_only", quote_only)
+        if quote_only:
+            attrs.update(monthly_price=None, yearly_price=None)
+        else:
+            errors = {}
+            for field in ("monthly_price", "yearly_price"):
+                value = attrs.get(field, getattr(self.instance, field, None))
+                if value is None or value < 0:
+                    errors[field] = "Define un precio mayor o igual a cero."
+            if errors:
+                raise serializers.ValidationError(errors)
         return attrs
 
     @transaction.atomic
     def create(self, validated_data):
         capabilities = validated_data.pop("capabilities", [])
         validated_data.setdefault("catalog_status", Plan.CatalogStatus.PUBLISHED)
-        validated_data.setdefault("visibility", Plan.Visibility.PUBLIC)
+        validated_data.setdefault("visibility", Plan.Visibility.QUOTE if validated_data.get("quote_only") else Plan.Visibility.PUBLIC)
         validated_data.setdefault("is_active", True)
         validated_data.setdefault("commercial_status", Plan.CommercialStatus.PROPOSAL)
         validated_data.setdefault("tax_validation_status", Plan.TaxValidationStatus.PENDING)
@@ -175,12 +185,12 @@ class PlanBundleSerializer(serializers.ModelSerializer):
     payroll_plan = serializers.PrimaryKeyRelatedField(queryset=Plan.objects.all())
     billing_plan_details = PlanSerializer(source="billing_plan", read_only=True)
     payroll_plan_details = PlanSerializer(source="payroll_plan", read_only=True)
-    monthly_price = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
-    yearly_price = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    monthly_price = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, allow_null=True)
+    yearly_price = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, allow_null=True)
 
     class Meta:
         model = PlanBundle
-        fields = ["id", "slug", "name", "short_description", "billing_plan", "payroll_plan", "billing_plan_details", "payroll_plan_details", "monthly_price", "yearly_price", "discount_percent", "display_order", "commercial_status", "is_active"]
+        fields = ["id", "slug", "name", "short_description", "billing_plan", "payroll_plan", "billing_plan_details", "payroll_plan_details", "monthly_price", "yearly_price", "discount_percent", "display_order", "commercial_status", "is_active", "quote_only", "features"]
         read_only_fields = ["id", "commercial_status", "is_active"]
 
     def validate(self, attrs):
@@ -193,4 +203,16 @@ class PlanBundleSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"billing_plan": "El componente debe ser facturación electrónica."})
         if payroll_plan and payroll_plan.plan_type != Plan.PlanType.PAYROLL_ADDON:
             raise serializers.ValidationError({"payroll_plan": "El componente debe ser nómina electrónica."})
+        quote = attrs.get("quote_only", getattr(self.instance, "quote_only", False))
+        for field, plan in (("billing_plan", billing_plan), ("payroll_plan", payroll_plan)):
+            changed = not self.instance or plan.pk != getattr(self.instance, field + "_id")
+            if changed and (not plan.is_active or plan.catalog_status != Plan.CatalogStatus.PUBLISHED):
+                raise serializers.ValidationError({field: "Selecciona un plan publicado y vigente."})
+            if not quote and (plan.quote_only or plan.monthly_price is None or plan.yearly_price is None):
+                raise serializers.ValidationError({field: "El componente debe tener precios definidos para ambos períodos."})
         return attrs
+
+    def validate_features(self, value):
+        if value is None:
+            return value
+        return PlanSerializer().validate_features(value)

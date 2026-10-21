@@ -2,11 +2,14 @@ from rest_framework.test import APITestCase
 from rest_framework import status
 
 from apps.accounts.models import User
-from .models import Plan, PlanCategory
+from .models import Plan, PlanBundle, PlanCategory
 
 
 class PlanManagementApiTests(APITestCase):
     def setUp(self):
+        # Isolate API contracts from historical catalog data migrations.
+        PlanBundle.objects.all().delete()
+        Plan.objects.all().delete()
         self.admin = User.objects.create_user(email="admin@example.com", full_name="Admin", admin_role=User.ROLE_SUPERADMIN)
         self.client.force_authenticate(self.admin)
 
@@ -50,27 +53,27 @@ class PlanManagementApiTests(APITestCase):
         self.assertFalse(response.data["has_inventory"])
         self.assertFalse(response.data["has_cash_register"])
 
-    def test_new_plan_stays_private_draft_until_commercial_tax_and_technical_approval(self):
+    def test_new_plan_is_published_immediately(self):
         response = self.client.post("/api/plans/", {
             "code": "nuvvi-inicio", "name": "NUVVI Inicio", "monthly_price": "24900",
             "yearly_price": "219000", "annual_document_quota": 120,
         }, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["catalog_status"], Plan.CatalogStatus.DRAFT)
-        self.assertEqual(response.data["visibility"], Plan.Visibility.PRIVATE)
-        self.assertFalse(response.data["is_active"])
+        self.assertEqual(response.data["catalog_status"], Plan.CatalogStatus.PUBLISHED)
+        self.assertEqual(response.data["visibility"], Plan.Visibility.PUBLIC)
+        self.assertTrue(response.data["is_active"])
 
         publish_response = self.client.post(f"/api/plans/{response.data['id']}/publish/")
-        self.assertEqual(publish_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(publish_response.status_code, status.HTTP_200_OK)
 
-    def test_cannot_create_published_plan_without_explicit_publish_action(self):
+    def test_can_create_published_plan_without_separate_publish_action(self):
         response = self.client.post("/api/plans/", {
-            "code": "direct-publish", "name": "Directo", "monthly_price": "1000",
+            "code": "direct-publish", "name": "Directo", "monthly_price": "1000", "yearly_price": "10000",
             "catalog_status": Plan.CatalogStatus.PUBLISHED,
         }, format="json")
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
     def test_non_admin_catalog_only_exposes_published_public_plans(self):
         Plan.objects.create(
@@ -91,7 +94,7 @@ class PlanManagementApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual([row["code"] for row in response.data["results"]], ["public-plan"])
 
-    def test_published_plan_contract_fields_cannot_be_overwritten(self):
+    def test_published_plan_can_be_edited(self):
         plan = Plan.objects.create(
             code="nuvvi-negocio", name="NUVVI Negocio", monthly_price="39900",
             yearly_price="359000", catalog_status=Plan.CatalogStatus.PUBLISHED,
@@ -100,9 +103,9 @@ class PlanManagementApiTests(APITestCase):
 
         response = self.client.patch(f"/api/plans/{plan.id}/", {"yearly_price": "399000"}, format="json")
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
         plan.refresh_from_db()
-        self.assertEqual(str(plan.yearly_price), "359000.00")
+        self.assertEqual(str(plan.yearly_price), "399000.00")
 
     def test_duplicate_creates_an_independent_private_draft(self):
         plan = Plan.objects.create(
@@ -189,3 +192,72 @@ class PlanManagementApiTests(APITestCase):
         response = self.client.post("/api/plans/", {"code": "restricted", "name": "Restricted"}, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_current_catalog_excludes_retired_duplicates_without_deleting_them(self):
+        active = Plan.objects.create(code="current", name="Inicio", catalog_status="published", is_active=True)
+        old = Plan.objects.create(code="old", name="Inicio", catalog_status="retired", is_active=False)
+        response = self.client.get("/api/plans/?current=true")
+        self.assertEqual([p["id"] for p in response.data["results"]], [active.pk])
+        self.assertTrue(Plan.objects.filter(pk=old.pk).exists())
+
+    def test_quote_preserves_zero_and_null_as_distinct_values(self):
+        response = self.client.post("/api/plans/", {
+            "code": "custom-payroll", "name": "Personalizado", "plan_type": "payroll_addon",
+            "quote_only": True, "max_users": 0, "max_employees": None,
+            "annual_document_quota": None, "accountant_users": None,
+        }, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["plan_type"], "payroll_addon")
+        self.assertEqual(response.data["max_users"], 0)
+        self.assertIsNone(response.data["annual_document_quota"])
+        self.assertIsNone(response.data["monthly_price"])
+
+    def test_edit_does_not_reset_other_commercial_fields(self):
+        features = [{"title": "Servicio", "items": [{"title": "Soporte", "description": "Horario guardado", "is_visible": False}]}]
+        plan = Plan.objects.create(code="preserve", name="Oferta", monthly_price="100", yearly_price="1000", max_issuers=3, certificate_included_annual=False, features=features)
+        response = self.client.patch(f"/api/plans/{plan.pk}/", {"name": "Oferta actualizada"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        plan.refresh_from_db()
+        self.assertEqual(plan.max_issuers, 3)
+        self.assertFalse(plan.certificate_included_annual)
+        self.assertEqual(plan.features, features)
+
+    def test_bundle_discount_persistence_publication_and_rounding(self):
+        from decimal import Decimal
+        billing = Plan.objects.create(code="bill", name="Facturación", monthly_price="24900", yearly_price="219000", catalog_status="published")
+        payroll = Plan.objects.create(code="pay", name="Nómina", plan_type="payroll_addon", monthly_price="9900", yearly_price="89000", catalog_status="published")
+        response = self.client.post("/api/plan-bundles/", {"slug": "test-bundle", "name": "Combo", "billing_plan": billing.pk, "payroll_plan": payroll.pk, "discount_percent": 5}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["monthly_price"], "33060.00")
+        self.assertEqual(response.data["yearly_price"], "292600.00")
+        self.assertTrue(response.data["is_active"])
+        bundle = PlanBundle.objects.get(pk=response.data["id"])
+        response = self.client.patch(f"/api/plan-bundles/{bundle.pk}/", {"name": "Combo actualizado"}, format="json")
+        bundle.refresh_from_db()
+        self.assertEqual(bundle.discount_percent, 5)
+        self.assertEqual(bundle.name, "Combo actualizado")
+        billing.monthly_price = Decimal("0.01")
+        payroll.monthly_price = Decimal("0.00")
+        bundle.billing_plan, bundle.payroll_plan, bundle.discount_percent = billing, payroll, 50
+        self.assertEqual(bundle.monthly_price, Decimal("0.01"))
+        bundle.quote_only = True
+        self.assertIsNone(bundle.monthly_price)
+
+    def test_bundle_rejects_unpublished_components_and_invalid_discount(self):
+        billing = Plan.objects.create(code="bill", name="Facturación", monthly_price="100", yearly_price="1000")
+        payroll = Plan.objects.create(code="pay", name="Nómina", plan_type="payroll_addon", monthly_price="10", yearly_price="100")
+        data = {"slug": "invalid", "name": "Combo", "billing_plan": billing.pk, "payroll_plan": payroll.pk, "discount_percent": 101}
+        response = self.client.post("/api/plan-bundles/", data, format="json")
+        self.assertIn("discount_percent", response.data)
+        data["discount_percent"] = 5
+        response = self.client.post("/api/plan-bundles/", data, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("billing_plan", response.data)
+
+    def test_invalid_prices_do_not_modify_saved_plan(self):
+        plan = Plan.objects.create(code="price", name="Precio", monthly_price="100", yearly_price="1000")
+        response = self.client.patch(f"/api/plans/{plan.pk}/", {"monthly_price": "-1"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("monthly_price", response.data)
+        plan.refresh_from_db()
+        self.assertEqual(str(plan.monthly_price), "100.00")

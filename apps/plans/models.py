@@ -1,3 +1,5 @@
+from decimal import Decimal, ROUND_HALF_UP
+
 from django.conf import settings
 from django.db import models
 
@@ -150,6 +152,8 @@ class PlanBundle(models.Model):
     payroll_plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="payroll_bundles")
     display_order = models.PositiveIntegerField(default=0)
     discount_percent = models.PositiveSmallIntegerField(default=5)
+    quote_only = models.BooleanField(default=False)
+    features = models.JSONField(default=None, null=True, blank=True)
     commercial_status = models.CharField(max_length=12, choices=CommercialStatus.choices, default=CommercialStatus.PROPOSAL)
     is_active = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -159,12 +163,19 @@ class PlanBundle(models.Model):
 
     @property
     def monthly_price(self):
-        total = (self.billing_plan.monthly_price or 0) + (self.payroll_plan.monthly_price or 0)
-        return total * (100 - self.discount_percent) / 100
+        return self.discounted_price("monthly_price")
 
     @property
     def yearly_price(self):
-        return ((self.billing_plan.yearly_price or 0) + (self.payroll_plan.yearly_price or 0)) * (100 - self.discount_percent) / 100
+        return self.discounted_price("yearly_price")
+
+    def discounted_price(self, field):
+        billing = getattr(self.billing_plan, field)
+        payroll = getattr(self.payroll_plan, field)
+        if self.quote_only or self.billing_plan.quote_only or self.payroll_plan.quote_only or billing is None or payroll is None:
+            return None
+        # COP is stored to cents. Apply the discount once, rounding half-up.
+        return ((billing + payroll) * Decimal(100 - self.discount_percent) / Decimal(100)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     def clean(self):
         from django.core.exceptions import ValidationError

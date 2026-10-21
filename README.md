@@ -82,6 +82,16 @@ MATIAS Sandbox uses the documented `https://sandbox-api.matias-api.com/api/ubl2.
 
 Full API docs at `/api/docs/` when running.
 
+### Administración de planes
+
+`GET /api/plans/?current=true` devuelve solo planes activos y publicados; el catálogo, sus contadores y los selectores de combos utilizan ese mismo criterio. `GET /api/plan-bundles/?current=true` filtra combos activos. Los registros anteriores y sus referencias se conservan.
+
+La creación publica inmediatamente. La modalidad `quote_only` es independiente del tipo de servicio. Los límites `null` significan sin definir (según cotización en ofertas personalizadas); `0` conserva su significado numérico. Los combos admiten `features=null` para heredar los beneficios de sus componentes, o una lista explícita para personalizarlos.
+
+Los precios de combos se calculan con `Decimal`, aplicando una sola vez el descuento a la suma del mismo período y redondeando a dos decimales con `ROUND_HALF_UP`. El frontend utiliza céntimos enteros con la misma política.
+
+Antes de desplegar el frontend de administración, ejecutar `python manage.py migrate`: las migraciones `0008` y `0009` añaden la presentación del combo y corrigen los límites de marcador de la oferta empresarial sembrada anteriormente. No cambian precios ni descuentos ni eliminan referencias. Validación del módulo: `python manage.py test apps.plans`.
+
 ---
 
 ## Project Structure

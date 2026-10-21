@@ -44,6 +44,8 @@ class PlanViewSet(ModelViewSet):
             queryset = queryset.filter(catalog_status=catalog_status)
         if category:
             queryset = queryset.filter(category_id=category)
+        if self.request.query_params.get("current") == "true":
+            queryset = queryset.filter(is_active=True, catalog_status=Plan.CatalogStatus.PUBLISHED)
         return queryset
 
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="commercial-proposals")
@@ -197,7 +199,7 @@ class PlanBundleViewSet(ModelViewSet):
     def get_queryset(self):
         queryset = super().get_queryset()
         user = self.request.user
-        if not (user.is_authenticated and (user.is_superuser or user.admin_role == "superadmin")):
+        if self.request.query_params.get("current") == "true" or not (user.is_authenticated and (user.is_superuser or user.admin_role == "superadmin")):
             queryset = queryset.filter(is_active=True)
         return queryset
 
