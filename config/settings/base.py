@@ -220,6 +220,7 @@ DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="Nuvvi <no-reply@nuvvi.lo
 
 # MATIAS API (placeholder)
 MATIAS_API_BASE_URL = env("MATIAS_API_BASE_URL", default="")
+MATIAS_API_PRODUCTION_BASE_URL = env("MATIAS_API_PRODUCTION_BASE_URL", default="")
 MATIAS_API_KEY = env("MATIAS_API_KEY", default="")
 MATIAS_API_SECRET = env("MATIAS_API_SECRET", default="")
 DIAN_ENVIRONMENT = env("DIAN_ENVIRONMENT", default="sandbox")

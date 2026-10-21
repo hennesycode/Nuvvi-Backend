@@ -8,7 +8,7 @@ from apps.accounts.models import User
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from .models import Company, CompanyProviderLink, CompanySyncAttempt
-from .services import CompanyApplicationService, MatiasCompanyClient
+from .services import CompanyApplicationService, MatiasCompanyClient, extract_remote_company, provider_status_for_remote
 from .views import CompanyDianConfigurationView, CompanyIdentityCheckView
 
 
@@ -23,6 +23,16 @@ class MatiasCompanySyncTests(TestCase):
             operational_status=MatiasConnection.OP_READY,
         )
         self.service = CompanyApplicationService(environment=MatiasConnection.ENVIRONMENT_SANDBOX)
+
+    def test_documented_customer_record_uuid_and_is_active_are_recognized(self):
+        remote = extract_remote_company({
+            "client_uuid": "customer-uuid", "company_name": "Empresa", "dni": "900123456",
+            "email": "empresa@example.test", "is_active": True,
+        })
+
+        self.assertEqual(remote["client_uuid"], "customer-uuid")
+        self.assertTrue(remote["enabled"])
+        self.assertEqual(provider_status_for_remote(remote), CompanyProviderLink.STATUS_REGISTERED)
 
     @patch.object(MatiasCompanyClient, "_request")
     def test_dian_proxy_scopes_requests_to_enabled_customer_and_records_history(self, request_mock):

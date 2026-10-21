@@ -20,7 +20,7 @@ from .models import MatiasCatalogSync, MatiasConnection
 
 
 SANDBOX_URL = "https://sandbox-api.matias-api.com/api/ubl2.1"
-PRODUCTION_URL = ""
+PRODUCTION_URL = "https://api.matias-api.com/api/ubl2.1"
 CATALOG_ENDPOINTS = [
     ("destination-environment", "Ambientes destino"),
     ("document-type", "Tipos de documento"),
@@ -46,7 +46,9 @@ CATALOG_ENDPOINTS = [
 
 
 def get_default_url(environment):
-    return PRODUCTION_URL if environment == MatiasConnection.ENVIRONMENT_PRODUCTION else SANDBOX_URL
+    if environment == MatiasConnection.ENVIRONMENT_PRODUCTION:
+        return str(getattr(settings, "MATIAS_API_PRODUCTION_BASE_URL", "") or PRODUCTION_URL).strip().rstrip("/")
+    return SANDBOX_URL
 
 
 def get_default_token_endpoint(environment):
@@ -105,6 +107,8 @@ def get_connection(environment=None):
 
 
 def matias_request(connection, endpoint, *, method="GET", token=None, payload=None, timeout=None):
+    if not connection.base_url:
+        return {"ok": False, "status_code": 0, "headers": {}, "data": {}, "response_time_ms": 0, "error": "La URL productiva de MATIAS no está configurada.", "error_type": "CONFIGURATION_ERROR", "endpoint": endpoint, "url": "", "content_type": ""}
     url = build_matias_url(connection.base_url, endpoint)
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
     headers = {"Accept": "application/json", "Content-Type": "application/json"}

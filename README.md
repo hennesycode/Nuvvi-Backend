@@ -58,8 +58,11 @@ docker compose up --build
 | `JWT_ACCESS_TOKEN_LIFETIME_MINUTES` | `60` | JWT access token lifetime |
 | `JWT_REFRESH_TOKEN_LIFETIME_DAYS` | `7` | JWT refresh token lifetime |
 | `DEFAULT_SUPERUSER_*` | — | Auto-created superuser credentials |
+| `MATIAS_API_PRODUCTION_BASE_URL` | `https://api.matias-api.com/api/ubl2.1` | MATIAS production API root (documented example); override only if MATIAS supplies a different root |
 
 Copy `.env.example` to `.env` and customize.
+
+MATIAS Sandbox uses the documented `https://sandbox-api.matias-api.com/api/ubl2.1` root; Production uses the documented `https://api.matias-api.com/api/ubl2.1` example. Production has a separate connection and PAT. Changing this environment variable does not overwrite a connection already stored in the database: update that connection in the MATIAS administration screen and validate it before registering production companies.
 
 ---
 
