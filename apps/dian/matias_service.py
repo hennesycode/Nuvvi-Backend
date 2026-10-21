@@ -211,7 +211,7 @@ def sanitized_payload(value, depth=0):
         sanitized = {}
         for key, item in value.items():
             lowered = str(key).lower()
-            if any(secret in lowered for secret in ("token", "authorization", "password", "secret")):
+            if any(secret in lowered for secret in ("token", "authorization", "password", "passphrase", "private_key", "secret", "certificate_file", "certificate_data")):
                 sanitized[key] = "***"
             else:
                 sanitized[key] = sanitized_payload(item, depth + 1)

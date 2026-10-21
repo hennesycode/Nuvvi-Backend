@@ -1,15 +1,19 @@
+import re
+from urllib.parse import urlencode
+
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.dian.models import MatiasConnection
+from apps.dian.matias_service import get_connection
 from apps.dian.views import IsSuperAdmin
 from apps.accounts.models import User
 
 from .models import Company, CompanySyncAttempt
 from .serializers import CompanyCreateSerializer, CompanySerializer, CompanySettingSerializer, CompanyUpdateSerializer, fetch_catalogs
-from .services import CompanyApplicationService, CompanyValidationError, normalize_email, normalize_nit, search_companies
+from .services import CompanyApplicationService, CompanyValidationError, MatiasCompanyClient, normalize_email, normalize_nit, search_companies
 
 
 def environment_from_request(request):
@@ -20,6 +24,16 @@ def environment_from_request(request):
 
 def validation_error_response(exc):
     return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def sanitize_provider_data(value):
+    """Mask secrets without truncating provider lists or hiding useful metadata."""
+    sensitive = ("token", "authorization", "password", "passphrase", "private_key", "secret", "base64certificate", "certificate_data", "certificate_file", "p12", "pfx")
+    if isinstance(value, dict):
+        return {key: "***" if any(part in str(key).lower() for part in sensitive) else sanitize_provider_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_provider_data(item) for item in value]
+    return value
 
 
 class CompanyListCreateView(APIView):
@@ -137,6 +151,82 @@ class CompanySettingsView(APIView):
         except CompanyValidationError as exc:
             return validation_error_response(exc)
         return Response(data)
+
+
+class CompanyDianConfigurationView(APIView):
+    """Narrow proxy for documented MATIAS per-customer DIAN setup endpoints."""
+    permission_classes = [IsSuperAdmin]
+    resources = {"software", "resolutions", "numbering-range", "certificate"}
+
+    def dispatch_matias(self, request, company, resource):
+        environment = environment_from_request(request)
+        link = company.provider_links.filter(provider="MATIAS", environment=environment).first()
+        if not link or not link.matias_client_uuid or not link.enabled_in_provider:
+            return Response({"detail": "La empresa debe estar registrada y habilitada en MATIAS para este ambiente."}, status=400)
+        client = MatiasCompanyClient(get_connection(environment))
+        if resource not in self.resources:
+            return Response({"detail": "Recurso DIAN no permitido."}, status=400)
+        params = {"client_uuid": link.matias_client_uuid}
+        if resource == "numbering-range":
+            params.update({k: v for k, v in request.query_params.items() if k in {"type_id", "sync"}})
+        elif resource == "software":
+            params.update({k: v for k, v in request.query_params.items() if k == "uid"})
+        body = request.data if isinstance(request.data, dict) else {}
+        item_id = body.get("id") or request.query_params.get("id")
+        action = body.get("action") or request.query_params.get("action")
+        if item_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", str(item_id)):
+            return Response({"detail": "El identificador de MATIAS no es válido."}, status=400)
+        if resource == "software" and action == "run-test" and not str(body.get("software_id", "")).isdigit():
+            return Response({"detail": "software_id debe ser el identificador numérico de un software DIAN."}, status=400)
+        if resource == "software" and action == "run-test":
+            endpoint, method = "/document/run-test", "POST"
+            payload = {"software_id": body.get("software_id")}
+        elif resource == "software" and action == "test-set":
+            endpoint, method, payload = f"/software/test/{item_id}", "GET", None
+        elif resource == "certificate" and action in {"upload", "renew"}:
+            if action == "renew" and not item_id:
+                return Response({"detail": "El ID del certificado activo es obligatorio para renovarlo."}, status=400)
+            endpoint = f"/certificate/{item_id}" if action == "renew" else "/certificate"
+            method = "PUT" if action == "renew" else "POST"
+            payload = {key: body[key] for key in ("certificate", "password", "description") if key in body}
+            if not payload.get("certificate") or not payload.get("password"):
+                return Response({"detail": "Selecciona el certificado .p12/.pfx e ingresa su contraseña."}, status=400)
+            if not isinstance(payload["certificate"], str) or not payload["certificate"].startswith("data:application/x-pkcs12;base64,"):
+                return Response({"detail": "El certificado debe enviarse codificado como PKCS#12 (.p12/.pfx)."}, status=400)
+            if len(payload["certificate"]) > 2_100_000:
+                return Response({"detail": "El certificado supera el tamaño máximo permitido de 1,5 MB."}, status=400)
+        elif resource == "certificate" and action == "expiration":
+            dni = body.get("dni") or company.nit
+            endpoint, method, payload = f"/certificate/expiration/{dni}", "GET", None
+        else:
+            suffix = f"/{item_id}" if item_id else ""
+            method = request.method
+            endpoint = f"/{resource}{suffix}"
+            payload = {key: value for key, value in body.items() if key not in {"environment", "action", "id", "resource"}}
+        response = client._request(f"{endpoint}?{urlencode(params)}", method=method, payload=payload)
+        CompanySyncAttempt.objects.create(
+            company=company, operation=f"DIAN_{action or method}_{resource}"[:40],
+            http_method=method, endpoint=endpoint, http_status=response.get("status_code") or None,
+            successful=response["ok"], error_code=str(response.get("error_type") or "")[:50],
+            error_message=(response.get("error") or "")[:2000],
+            response_time_ms=response.get("response_time_ms"), created_by=request.user,
+        )
+        if not response["ok"]:
+            return Response({"detail": response.get("error") or "MATIAS rechazó la solicitud.", "provider": sanitize_provider_data(response.get("data", {}))}, status=response.get("status_code") or 502)
+        return Response(sanitize_provider_data(response.get("data", {})), status=response.get("status_code") or 200)
+
+    def get(self, request, pk):
+        resource = request.query_params.get("resource", "")
+        return self.dispatch_matias(request, get_object_or_404(Company, pk=pk), resource)
+
+    def post(self, request, pk):
+        return self.dispatch_matias(request, get_object_or_404(Company, pk=pk), str(request.data.get("resource", "")))
+
+    def put(self, request, pk):
+        return self.dispatch_matias(request, get_object_or_404(Company, pk=pk), str(request.data.get("resource", "")))
+
+    def delete(self, request, pk):
+        return self.dispatch_matias(request, get_object_or_404(Company, pk=pk), request.query_params.get("resource", ""))
 
 
 class CompanyProviderSyncStatusView(APIView):

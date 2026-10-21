@@ -9,7 +9,7 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 
 from .models import Company, CompanyProviderLink, CompanySyncAttempt
 from .services import CompanyApplicationService, MatiasCompanyClient
-from .views import CompanyIdentityCheckView
+from .views import CompanyDianConfigurationView, CompanyIdentityCheckView
 
 
 class MatiasCompanySyncTests(TestCase):
@@ -23,6 +23,87 @@ class MatiasCompanySyncTests(TestCase):
             operational_status=MatiasConnection.OP_READY,
         )
         self.service = CompanyApplicationService(environment=MatiasConnection.ENVIRONMENT_SANDBOX)
+
+    @patch.object(MatiasCompanyClient, "_request")
+    def test_dian_proxy_scopes_requests_to_enabled_customer_and_records_history(self, request_mock):
+        admin = User.objects.create_superuser(email="admin@example.test", password="secure-pass-123")
+        company = Company.objects.create(
+            environment="sandbox", legal_name="Empresa DIAN", nit="900123456", email="dian@example.test",
+            owner_first_name="Test", owner_last_name="Owner", country_id="1", city_id="1",
+            address="Calle 1", mobile="+573001234567",
+        )
+        CompanyProviderLink.objects.create(
+            company=company, environment="sandbox", matias_client_uuid="customer-uuid", enabled_in_provider=True,
+        )
+        request_mock.return_value = {"ok": True, "status_code": 200, "data": {"data": []}, "response_time_ms": 5, "endpoint": "/software"}
+        request = APIRequestFactory().get("/api/admin/companies/x/dian/?resource=software&environment=sandbox")
+        force_authenticate(request, user=admin)
+
+        response = CompanyDianConfigurationView.as_view()(request, pk=company.pk)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(request_mock.call_args.args[0], "/software?client_uuid=customer-uuid")
+        self.assertEqual(CompanySyncAttempt.objects.filter(company=company, operation="DIAN_GET_software", successful=True).count(), 1)
+
+    @patch.object(MatiasCompanyClient, "_request")
+    def test_dian_proxy_uses_published_run_test_endpoint(self, request_mock):
+        admin = User.objects.create_superuser(email="admin2@example.test", password="secure-pass-123")
+        company = Company.objects.create(
+            environment="sandbox", legal_name="Empresa DIAN 2", nit="900123457", email="dian2@example.test",
+            owner_first_name="Test", owner_last_name="Owner", country_id="1", city_id="1",
+            address="Calle 1", mobile="+573001234567",
+        )
+        CompanyProviderLink.objects.create(company=company, environment="sandbox", matias_client_uuid="customer-uuid", enabled_in_provider=True)
+        request_mock.return_value = {"ok": True, "status_code": 200, "data": {"success": True}, "response_time_ms": 5, "endpoint": "/document/run-test"}
+        request = APIRequestFactory().post("/api/admin/companies/x/dian/", {"resource": "software", "action": "run-test", "software_id": 23, "environment": "sandbox"}, format="json")
+        force_authenticate(request, user=admin)
+
+        response = CompanyDianConfigurationView.as_view()(request, pk=company.pk)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(request_mock.call_args.args[0], "/document/run-test?client_uuid=customer-uuid")
+        self.assertEqual(request_mock.call_args.kwargs["payload"], {"software_id": 23})
+
+    @patch.object(MatiasCompanyClient, "_request")
+    def test_certificate_upload_uses_documented_payload_without_exposing_password(self, request_mock):
+        admin = User.objects.create_superuser(email="admin3@example.test", password="secure-pass-123")
+        company = Company.objects.create(
+            environment="sandbox", legal_name="Empresa Cert", nit="900123458", email="cert@example.test",
+            owner_first_name="Test", owner_last_name="Owner", country_id="1", city_id="1",
+            address="Calle 1", mobile="+573001234567",
+        )
+        CompanyProviderLink.objects.create(company=company, environment="sandbox", matias_client_uuid="customer-uuid", enabled_in_provider=True)
+        request_mock.return_value = {"ok": True, "status_code": 200, "data": {"success": True, "password": "must-not-leak"}, "response_time_ms": 4, "endpoint": "/certificate"}
+        request = APIRequestFactory().post("/api/admin/companies/x/dian/", {"resource": "certificate", "action": "upload", "certificate": "data:application/x-pkcs12;base64,YQ==", "password": "secret-pass", "description": "Sandbox"}, format="json")
+        force_authenticate(request, user=admin)
+
+        response = CompanyDianConfigurationView.as_view()(request, pk=company.pk)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(request_mock.call_args.args[0], "/certificate?client_uuid=customer-uuid")
+        self.assertEqual(request_mock.call_args.kwargs["method"], "POST")
+        self.assertEqual(request_mock.call_args.kwargs["payload"]["password"], "secret-pass")
+        self.assertEqual(response.data["password"], "***")
+        self.assertNotIn("secret-pass", str(CompanySyncAttempt.objects.get(company=company).error_message))
+
+    @patch.object(MatiasCompanyClient, "_request")
+    def test_certificate_renewal_uses_documented_certificate_id_route(self, request_mock):
+        admin = User.objects.create_superuser(email="admin4@example.test", password="secure-pass-123")
+        company = Company.objects.create(
+            environment="sandbox", legal_name="Empresa Cert 2", nit="900123459", email="cert2@example.test",
+            owner_first_name="Test", owner_last_name="Owner", country_id="1", city_id="1",
+            address="Calle 1", mobile="+573001234567",
+        )
+        CompanyProviderLink.objects.create(company=company, environment="sandbox", matias_client_uuid="customer-uuid", enabled_in_provider=True)
+        request_mock.return_value = {"ok": True, "status_code": 200, "data": {"success": True}, "response_time_ms": 4, "endpoint": "/certificate/19"}
+        request = APIRequestFactory().post("/api/admin/companies/x/dian/", {"resource": "certificate", "action": "renew", "id": 19, "certificate": "data:application/x-pkcs12;base64,YQ==", "password": "secret-pass", "environment": "sandbox"}, format="json")
+        force_authenticate(request, user=admin)
+
+        response = CompanyDianConfigurationView.as_view()(request, pk=company.pk)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(request_mock.call_args.args[0], "/certificate/19?client_uuid=customer-uuid")
+        self.assertEqual(request_mock.call_args.kwargs["method"], "PUT")
 
     @patch("apps.companies.services.matias_request")
     def test_reconcile_imports_remote_customer_into_local_company_list(self, request_mock):

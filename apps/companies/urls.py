@@ -1,6 +1,6 @@
 from django.urls import path
 
-from .views import CompanyArchiveView, CompanyCatalogsView, CompanyDetailView, CompanyDisableProviderView, CompanyEnableProviderView, CompanyIdentityCheckView, CompanyListCreateView, CompanyProviderSyncStatusView, CompanyReconcileView, CompanySettingsView, CompanyStatsView, CompanySyncView
+from .views import CompanyArchiveView, CompanyCatalogsView, CompanyDetailView, CompanyDisableProviderView, CompanyEnableProviderView, CompanyIdentityCheckView, CompanyListCreateView, CompanyProviderSyncStatusView, CompanyReconcileView, CompanySettingsView, CompanyStatsView, CompanySyncView, CompanyDianConfigurationView
 
 urlpatterns = [
     path("admin/companies/", CompanyListCreateView.as_view(), name="admin-companies"),
@@ -15,4 +15,5 @@ urlpatterns = [
     path("admin/companies/<uuid:pk>/archive/", CompanyArchiveView.as_view(), name="admin-company-archive"),
     path("admin/companies/<uuid:pk>/stats/", CompanyStatsView.as_view(), name="admin-company-stats"),
     path("admin/companies/<uuid:pk>/settings/", CompanySettingsView.as_view(), name="admin-company-settings"),
+    path("admin/companies/<uuid:pk>/dian/", CompanyDianConfigurationView.as_view(), name="admin-company-dian-configuration"),
 ]
