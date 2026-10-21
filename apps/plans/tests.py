@@ -48,6 +48,75 @@ class PlanManagementApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("requires_base_plan", response.data)
 
+    def test_new_plan_is_private_draft_until_explicitly_published(self):
+        response = self.client.post("/api/plans/", {
+            "code": "nuvvi-inicio", "name": "NUVVI Inicio", "monthly_price": "24900",
+            "yearly_price": "219000", "annual_document_quota": 120,
+        }, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["catalog_status"], Plan.CatalogStatus.DRAFT)
+        self.assertEqual(response.data["visibility"], Plan.Visibility.PRIVATE)
+
+        publish_response = self.client.post(f"/api/plans/{response.data['id']}/publish/")
+        self.assertEqual(publish_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(publish_response.data["catalog_status"], Plan.CatalogStatus.PUBLISHED)
+
+    def test_cannot_create_published_plan_without_explicit_publish_action(self):
+        response = self.client.post("/api/plans/", {
+            "code": "direct-publish", "name": "Directo", "monthly_price": "1000",
+            "catalog_status": Plan.CatalogStatus.PUBLISHED,
+        }, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_non_admin_catalog_only_exposes_published_public_plans(self):
+        Plan.objects.create(
+            code="public-plan", name="Público", monthly_price="1000",
+            catalog_status=Plan.CatalogStatus.PUBLISHED, visibility=Plan.Visibility.PUBLIC,
+        )
+        Plan.objects.create(
+            code="private-plan", name="Privado", monthly_price="1000",
+            catalog_status=Plan.CatalogStatus.PUBLISHED, visibility=Plan.Visibility.PRIVATE,
+        )
+        support = User.objects.create_user(
+            email="support-catalog@example.com", full_name="Soporte", admin_role=User.ROLE_SUPPORT,
+        )
+        self.client.force_authenticate(support)
+
+        response = self.client.get("/api/plans/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["code"] for row in response.data["results"]], ["public-plan"])
+
+    def test_published_plan_contract_fields_cannot_be_overwritten(self):
+        plan = Plan.objects.create(
+            code="nuvvi-negocio", name="NUVVI Negocio", monthly_price="39900",
+            yearly_price="359000", catalog_status=Plan.CatalogStatus.PUBLISHED,
+            visibility=Plan.Visibility.PUBLIC,
+        )
+
+        response = self.client.patch(f"/api/plans/{plan.id}/", {"yearly_price": "399000"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        plan.refresh_from_db()
+        self.assertEqual(str(plan.yearly_price), "359000.00")
+
+    def test_duplicate_creates_an_independent_private_draft(self):
+        plan = Plan.objects.create(
+            code="nuvvi-crecimiento", name="NUVVI Crecimiento", monthly_price="59900",
+            yearly_price="539000", catalog_status=Plan.CatalogStatus.PUBLISHED,
+            visibility=Plan.Visibility.PUBLIC,
+        )
+
+        response = self.client.post(f"/api/plans/{plan.id}/duplicate/")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertNotEqual(response.data["id"], plan.id)
+        self.assertEqual(response.data["catalog_status"], Plan.CatalogStatus.DRAFT)
+        self.assertEqual(response.data["visibility"], Plan.Visibility.PRIVATE)
+        self.assertTrue(Plan.objects.filter(pk=plan.pk).exists())
+
     def test_category_with_plans_cannot_be_deleted(self):
         category = PlanCategory.objects.create(name="Contabilidad")
         Plan.objects.create(code="contable", name="Contable", category=category)

@@ -4,10 +4,12 @@ from django.db import models
 class PlanCategory(models.Model):
     name = models.CharField(max_length=100, unique=True)
     description = models.CharField(max_length=255, blank=True, default="")
+    display_order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["name"]
+        ordering = ["display_order", "name"]
         verbose_name_plural = "plan categories"
 
     def __str__(self):
@@ -15,6 +17,18 @@ class PlanCategory(models.Model):
 
 
 class Plan(models.Model):
+    class CatalogStatus(models.TextChoices):
+        DRAFT = "draft", "Borrador"
+        PUBLISHED = "published", "Publicado"
+        RETIRED = "retired", "Retirado"
+        ARCHIVED = "archived", "Archivado"
+
+    class Visibility(models.TextChoices):
+        PUBLIC = "public", "Público"
+        PRIVATE = "private", "Privado"
+        LINK = "link", "Disponible mediante enlace"
+        QUOTE = "quote", "Solo cotización"
+
     class PlanType(models.TextChoices):
         INVOICING = "invoicing", "Facturación electrónica"
         PAYROLL_ADDON = "payroll_addon", "Complemento de nómina"
@@ -29,6 +43,11 @@ class Plan(models.Model):
     name = models.CharField(max_length=255)
     short_description = models.CharField(max_length=255, blank=True, default="")
     description = models.TextField(blank=True, default="")
+    target_audience = models.CharField(max_length=255, blank=True, default="")
+    commercial_badge = models.CharField(max_length=80, blank=True, default="")
+    display_order = models.PositiveIntegerField(default=0)
+    catalog_status = models.CharField(max_length=12, choices=CatalogStatus.choices, default=CatalogStatus.DRAFT)
+    visibility = models.CharField(max_length=10, choices=Visibility.choices, default=Visibility.PRIVATE)
     plan_type = models.CharField(max_length=20, choices=PlanType.choices, default=PlanType.INVOICING)
     category = models.ForeignKey(PlanCategory, on_delete=models.SET_NULL, null=True, blank=True, related_name="plans")
     features = models.JSONField(default=list, blank=True)
@@ -55,7 +74,7 @@ class Plan(models.Model):
 
     class Meta:
         db_table = "plans_plan"
-        ordering = ["monthly_price"]
+        ordering = ["display_order", "monthly_price", "id"]
 
     def __str__(self):
         return self.name
