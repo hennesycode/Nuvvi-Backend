@@ -33,7 +33,7 @@ class PlanViewSet(ModelViewSet):
             queryset = queryset.filter(
                 is_active=True,
                 catalog_status=Plan.CatalogStatus.PUBLISHED,
-                visibility=Plan.Visibility.PUBLIC,
+                visibility__in=[Plan.Visibility.PUBLIC, Plan.Visibility.QUOTE],
             )
         plan_type = self.request.query_params.get("plan_type")
         catalog_status = self.request.query_params.get("catalog_status")
@@ -49,8 +49,9 @@ class PlanViewSet(ModelViewSet):
     @action(detail=False, methods=["get"], permission_classes=[AllowAny], url_path="commercial-proposals")
     def commercial_proposals(self, request):
         queryset = Plan.objects.filter(
-            commercial_status=Plan.CommercialStatus.PROPOSAL,
-            catalog_status=Plan.CatalogStatus.DRAFT,
+            is_active=True,
+            catalog_status=Plan.CatalogStatus.PUBLISHED,
+            visibility__in=[Plan.Visibility.PUBLIC, Plan.Visibility.QUOTE],
         ).select_related("category").prefetch_related("plan_capabilities__capability")
         return Response(self.get_serializer(queryset, many=True).data)
 
@@ -197,8 +198,8 @@ class PlanBundleViewSet(ModelViewSet):
         queryset = super().get_queryset()
         user = self.request.user
         if not (user.is_authenticated and (user.is_superuser or user.admin_role == "superadmin")):
-            queryset = queryset.filter(commercial_status=PlanBundle.CommercialStatus.PROPOSAL, is_active=False)
+            queryset = queryset.filter(is_active=True)
         return queryset
 
     def perform_create(self, serializer):
-        serializer.save(commercial_status=PlanBundle.CommercialStatus.PROPOSAL, is_active=False)
+        serializer.save(commercial_status=PlanBundle.CommercialStatus.APPROVED, is_active=True)

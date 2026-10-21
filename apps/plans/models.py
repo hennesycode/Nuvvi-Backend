@@ -149,6 +149,7 @@ class PlanBundle(models.Model):
     billing_plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="billing_bundles")
     payroll_plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="payroll_bundles")
     display_order = models.PositiveIntegerField(default=0)
+    discount_percent = models.PositiveSmallIntegerField(default=5)
     commercial_status = models.CharField(max_length=12, choices=CommercialStatus.choices, default=CommercialStatus.PROPOSAL)
     is_active = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -158,11 +159,12 @@ class PlanBundle(models.Model):
 
     @property
     def monthly_price(self):
-        return (self.billing_plan.monthly_price or 0) + (self.payroll_plan.monthly_price or 0)
+        total = (self.billing_plan.monthly_price or 0) + (self.payroll_plan.monthly_price or 0)
+        return total * (100 - self.discount_percent) / 100
 
     @property
     def yearly_price(self):
-        return (self.billing_plan.yearly_price or 0) + (self.payroll_plan.yearly_price or 0)
+        return ((self.billing_plan.yearly_price or 0) + (self.payroll_plan.yearly_price or 0)) * (100 - self.discount_percent) / 100
 
     def clean(self):
         from django.core.exceptions import ValidationError
