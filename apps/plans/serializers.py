@@ -27,3 +27,19 @@ class PlanSerializer(serializers.ModelSerializer):
                 if not isinstance(item, dict) or not str(item.get("title", "")).strip():
                     raise serializers.ValidationError("Cada beneficio debe tener un título.")
         return value
+
+    def validate(self, attrs):
+        plan_type = attrs.get("plan_type", getattr(self.instance, "plan_type", Plan.PlanType.INVOICING))
+        requires_base_plan = attrs.get("requires_base_plan", getattr(self.instance, "requires_base_plan", False))
+        max_employees = attrs.get("max_employees", getattr(self.instance, "max_employees", 0))
+        quote_only = attrs.get("quote_only", getattr(self.instance, "quote_only", False))
+        monthly_price = attrs.get("monthly_price", getattr(self.instance, "monthly_price", 0))
+        yearly_price = attrs.get("yearly_price", getattr(self.instance, "yearly_price", 0))
+
+        if plan_type == Plan.PlanType.PAYROLL_ADDON and not requires_base_plan:
+            raise serializers.ValidationError({"requires_base_plan": "El complemento de nómina debe requerir un plan principal de facturación."})
+        if plan_type == Plan.PlanType.PAYROLL_ADDON and max_employees < 1:
+            raise serializers.ValidationError({"max_employees": "Define el máximo de empleados del complemento de nómina."})
+        if not quote_only and monthly_price <= 0 and yearly_price <= 0:
+            raise serializers.ValidationError("Define un precio mensual o anual, o marca el plan como cotización personalizada.")
+        return attrs

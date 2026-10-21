@@ -27,6 +27,27 @@ class PlanManagementApiTests(APITestCase):
         response = self.client.post("/api/plans/", {"code": "basico", "name": "Básico", "features": [{"title": "", "items": []}]}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_creates_payroll_addon_with_explicit_limits_and_base_plan_requirement(self):
+        response = self.client.post("/api/plans/", {
+            "code": "payroll-initial", "name": "Nómina Inicial", "plan_type": "payroll_addon",
+            "monthly_price": "9900", "yearly_price": "89000", "max_employees": 2,
+            "annual_document_quota": 24, "max_documents_per_month": 2,
+            "requires_base_plan": True,
+        }, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["annual_document_quota"], 24)
+        self.assertTrue(response.data["requires_base_plan"])
+
+    def test_rejects_payroll_addon_without_base_plan(self):
+        response = self.client.post("/api/plans/", {
+            "code": "payroll-invalid", "name": "Nómina sin base", "plan_type": "payroll_addon",
+            "monthly_price": "9900", "yearly_price": "89000", "max_employees": 2,
+        }, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("requires_base_plan", response.data)
+
     def test_category_with_plans_cannot_be_deleted(self):
         category = PlanCategory.objects.create(name="Contabilidad")
         Plan.objects.create(code="contable", name="Contable", category=category)
